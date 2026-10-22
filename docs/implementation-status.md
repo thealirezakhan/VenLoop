@@ -24,7 +24,7 @@ Phases per PRD 19. Do not mark a phase done until its acceptance criteria pass.
 ## Phase 2 — Domain rules and workflow — DONE
 
 - [x] Domain types (`src/modules/rules-engine/types.ts`), rule set version `v1.1.0` (v1.0.0 + emergency pathway, spoken replies, escalation-case policy)
-- [x] Pure rules engine `evaluateDecision` — precedence: consent → emergency → dosage block → symptoms → no-answer (threshold 2) → clarification flag → adherence; unknown never becomes a report (PRD 9.2–9.4)
+- [x] Pure rules engine `evaluateDecision` → precedence: consent → emergency → dosage block → symptoms → no-answer (threshold 2) → clarification flag → adherence; unknown never becomes a report (PRD 9.2–9.4)
 - [x] Escalation-case policy (replaces approve/reject): urgent notifications execute immediately via the mock adapter (labelled simulated) and open an escalation case for human acknowledgement + category-specific follow-up; dosage advice remains permanently blocked
 - [x] Conversation close-out: decisions carry `replyText` + one `followUpQuestion`; post-decision turns are reassessed cumulatively every turn and an escalation can upgrade (symptom/dosage → emergency) without reopening the check-in
 - [x] Check-in + action state machines with typed `INVALID_TRANSITION` errors
@@ -48,7 +48,7 @@ Phases per PRD 19. Do not mark a phase done until its acceptance criteria pass.
 ## Phase 5 — Scenario rehearsal — DONE
 
 - [x] `/demo/call-simulator`: patient picker (deep-linkable via `?patient=`), call-language selector, chat-style transcript with AI/patient/decision bubbles, scenario chips TC1–TC6 (TC2 records a no-answer attempt; TC6 combines breathing trouble + dosage), conversation-state rail, guardrail/telephony panels, start/submit/no-answer against the real pipeline, browser Web Speech mic by default, optional VerbX STT/TTS + translation when `VERBX_API_KEY` and `SPEECH_PROVIDER=verbx` are set, persistent SIMULATED CALL labeling; no fabricated “caregiver alerted” close-out copy
-- [x] Live-tested: TC1 end-to-end (log_adherence · ack.taken · completed); TC4 close-out live (dosage block → follow-up → goodbye)
+- [x] Live-tested: TC1 end-to-end (log_adherence → ack.taken → completed); TC4 close-out live (dosage block → follow-up → goodbye)
 
 ## Phase 6 — Evidence, audit, operations — DONE
 
@@ -63,7 +63,7 @@ Phases per PRD 19. Do not mark a phase done until its acceptance criteria pass.
 - [x] CI: `.github/workflows/ci.yml` — lint, typecheck, test (DB suites skip), build
 - [x] Evidence exportable (JSON download)
 - [ ] Deployment smoke tests / running against a deployed app — deferred (local-only per plan)
-- [x] Current verification: `pnpm lint`, `pnpm typecheck`, `pnpm test` (89 passed), `pnpm test:e2e` (9 passed), `pnpm build` all green
+- [x] Current verification: `pnpm lint`, `pnpm typecheck`, `pnpm test` (112 passed), `pnpm test:e2e` (9 passed), `pnpm build` all green
 
 ## UI pass — neo-tactile redesign — DONE
 
@@ -94,11 +94,11 @@ Phases per PRD 19. Do not mark a phase done until its acceptance criteria pass.
 - [x] Escalation actions use a purpose-scoped idempotency key and cases are deduplicated by check-in + category.
 - [x] Deterministic question/reply flow is unchanged; scripted emergency wording always wins over generic follow-up wording.
 - [x] Optional VerbX adapter (`src/lib/server/speech.ts`, routes `/api/v1/speech/{status,stt,tts}`): STT, TTS, and translation stay server-side with timeouts, input caps, and rate limits. Missing key returns `SPEECH_NOT_CONFIGURED`; the simulator stays text-only and labels speech simulated.
-- [x] Simulator: call-language selector (English/Hindi/Marathi), VerbX mic when configured, browser Web Speech otherwise, optional spoken replies, active-concern rail, and TC6 one-turn reassessment demo.
+- [x] Simulator: call-language selector (English/Hindi/Marathi), browser streaming speech recognition by default with 700 ms silence auto-submit, VerbX batch STT fallback, optional spoken replies, active-concern rail, and TC6 one-turn reassessment demo.
 - [x] Non-English input is translated to English only when VerbX is configured; otherwise it degrades to clarification (never a guessed adherence conclusion or missed emergency).
-- [x] Groq cost guards: per-process concurrency cap (4), 12-second timeout, 700-token cap, deterministic replies for routine/duplicate/long turns, recent-turn-only context.
+- [x] Groq cost guards: per-process concurrency cap (4), 8-second timeout, 1024-token cap with strict JSON schema, deterministic replies for routine/duplicate/long turns, recent-turn-only context.
 - [x] Regression tests: `trouble breathing` + dosage extraction, cumulative non-downgrade/upgrade unit tests, DB pipeline symptom→emergency upgrade with two cases and two actions, TC6 e2e.
-- [x] Live VerbX verified with `SPEECH_PROVIDER=verbx`: voice listing, English/Hindi/Marathi TTS, and English↔Hindi translation return 200 through the app routes. A Hindi emergency utterance was translated, extracted, and escalated correctly end to end.
+- [x] Live VerbX verified with `SPEECH_PROVIDER=verbx`: voice listing, English/Hindi/Marathi TTS, and English→Hindi translation return 200 through the app routes. A Hindi emergency utterance was translated, extracted, and escalated correctly end to end.
 - [ ] Live VerbX STT returned `degraded_reason: provider_outage` with empty text (HTTP 200) during verification. The adapter rejects empty transcripts as `provider_error`; browser speech remains the fallback.
 - Note: the live API accepts the key via `X-API-Key`; its OpenAPI file advertises `Authorization: Bearer`, which returns 401.
 

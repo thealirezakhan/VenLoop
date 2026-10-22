@@ -48,6 +48,14 @@ export async function EvidenceConsole({ id, backHref, backLabel }: { id: string;
   const caseRows = cases.data ?? [];
   const openCases = caseRows.filter((c) => c.resolution_status !== "resolved_reported");
   const state = (stateRow.data?.state ?? {}) as {
+    symptoms?: string[];
+    severeSymptoms?: string[];
+    addressedSymptoms?: string[];
+    retractedSymptoms?: string[];
+    openQuestions?: string[];
+    askedQuestions?: string[];
+    unansweredQuestions?: string[];
+    followUpAttempts?: Record<string, number>;
     activeConcerns?: string[];
     medicationQuestions?: string[];
     facts?: { kind: string; value: string; severity?: string; sourceTurnId: string; sourceText: string }[];
@@ -120,6 +128,10 @@ export async function EvidenceConsole({ id, backHref, backLabel }: { id: string;
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               {[
                 ["Active concerns", (state.activeConcerns ?? []).join(", ") || "none"],
+                ["Active symptoms", (state.symptoms ?? []).join(", ") || "none"],
+                ["Addressed", (state.addressedSymptoms ?? []).join(", ") || "none"],
+                ["Retracted", (state.retractedSymptoms ?? []).join(", ") || "none"],
+                ["Unanswered questions", `${(state.unansweredQuestions ?? []).length}`],
                 ["Medication questions", (state.medicationQuestions ?? []).join(", ") || "none"],
                 ["Next step", (state.recommendedNextStep ?? "none").replaceAll("_", " ")],
                 ["Analysis source", state.analysisSource ?? "none"],
@@ -135,6 +147,42 @@ export async function EvidenceConsole({ id, backHref, backLabel }: { id: string;
                 {state.summary}
               </p>
             ) : null}
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div className="rounded-lg bg-canvas px-2.5 py-2">
+                <div className="text-[8.5px] font-bold tracking-wider text-ink-muted uppercase">
+                  Open questions
+                </div>
+                <div className="text-[10px]">
+                  {(state.openQuestions ?? []).join(", ") || "none"}
+                </div>
+              </div>
+              <div className="rounded-lg bg-canvas px-2.5 py-2">
+                <div className="text-[8.5px] font-bold tracking-wider text-ink-muted uppercase">
+                  Asked questions
+                </div>
+                <div className="text-[10px]">
+                  {(state.askedQuestions ?? []).join(", ") || "none"}
+                </div>
+              </div>
+              <div className="rounded-lg bg-canvas px-2.5 py-2">
+                <div className="text-[8.5px] font-bold tracking-wider text-ink-muted uppercase">
+                  Follow-up attempts
+                </div>
+                <div className="text-[10px]">
+                  {Object.entries(state.followUpAttempts ?? {})
+                    .map(([question, count]) => `${question}: ${count}`)
+                    .join(", ") || "none"}
+                </div>
+              </div>
+              <div className="rounded-lg bg-canvas px-2.5 py-2">
+                <div className="text-[8.5px] font-bold tracking-wider text-ink-muted uppercase">
+                  Unanswered
+                </div>
+                <div className="text-[10px]">
+                  {(state.unansweredQuestions ?? []).join("; ") || "none"}
+                </div>
+              </div>
+            </div>
             {(state.facts ?? []).length > 0 ? (
               <ul className="flex flex-wrap gap-1.5">
                 {(state.facts ?? []).map((fact, index) => (
@@ -155,7 +203,7 @@ export async function EvidenceConsole({ id, backHref, backLabel }: { id: string;
       </SectionCard>
 
       <div className="grid gap-4 xl:grid-cols-2">
-        <SectionCard title="Original transcript" eyebrow="Unmodified input" bodyClassName="p-4">
+        <SectionCard title="Original transcript" eyebrow="Immutable input; model interpretation is labelled separately" bodyClassName="p-4">
           {(conversation.data ?? []).length === 0 ? (
             <EmptyState>No conversation recorded.</EmptyState>
           ) : (
@@ -174,6 +222,11 @@ export async function EvidenceConsole({ id, backHref, backLabel }: { id: string;
                   <blockquote className="mt-1 border-l-2 border-ink/25 pl-2 text-[11.5px] leading-relaxed text-ink-soft italic">
                     “{c.original_transcript}”
                   </blockquote>
+                  {c.normalized_transcript && c.normalized_transcript !== c.original_transcript ? (
+                    <p className="mt-1 pl-2 text-[9.5px] text-ink-muted">
+                      Normalized for extraction: {c.normalized_transcript}
+                    </p>
+                  ) : null}
                   {c.agent_reply ? (
                     <p className="mt-1.5 pl-2 text-[11.5px] leading-relaxed text-ink">
                       <span className="font-semibold">Agent:</span> {c.agent_reply}
@@ -230,7 +283,7 @@ export async function EvidenceConsole({ id, backHref, backLabel }: { id: string;
           )}
         </SectionCard>
 
-        <SectionCard title="Decisions" eyebrow="Rule set trace" bodyClassName="p-4">
+        <SectionCard title="Decisions" eyebrow="Deterministic authority; not model interpretation" bodyClassName="p-4">
           {(decisions.data ?? []).length === 0 ? (
             <EmptyState>No decisions recorded.</EmptyState>
           ) : (

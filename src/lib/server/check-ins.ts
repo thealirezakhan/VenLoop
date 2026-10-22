@@ -3,6 +3,7 @@ import { ApiFailure } from "./failures";
 import { canViewPatient, type Role } from "@/lib/permissions";
 import { evaluateDecision } from "@/modules/rules-engine/rules";
 import { extractSignals, type ExtractedSignals } from "@/modules/rules-engine/extract";
+import { canonicalSymptomCode } from "@/modules/rules-engine/symptoms";
 import {
   RULE_SET_VERSION,
   type DecisionResult,
@@ -63,6 +64,10 @@ export interface DecisionRow {
   decision_reason: string;
   rule_set_version: string;
   response_key?: string;
+}
+
+function spokenText(replyText: string, followUpQuestion: string | null): string {
+  return [replyText, followUpQuestion].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
 }
 
 const RESPONSE_KEY_BY_DECISION: Record<string, string> = {
@@ -234,6 +239,9 @@ export interface SubmitInputResult {
   replyText: string;
   /** One follow-up question before the call ends; null = close. */
   followUpQuestion: string | null;
+  /** Exactly what the browser should speak, in the server-selected language. */
+  spokenText: string;
+  language: SupportedLanguage;
   /** True when the deterministic conversation gate allows the call to end. */
   closing: boolean;
   /** Structured state after this turn; absent on no-answer decisions. */
@@ -335,6 +343,8 @@ async function continueConversation(
       actionId: null,
       replyText: alreadyEnded(language),
       followUpQuestion: null,
+      spokenText: alreadyEnded(language),
+      language,
       closing: true,
       conversation: { state: previousState, replySource: "scripted" },
     };
@@ -439,6 +449,8 @@ async function continueConversation(
     actionId,
     replyText: agent.text,
     followUpQuestion,
+    spokenText: spokenText(agent.text, followUpQuestion),
+    language,
     closing: next.closing,
     conversation: { state: next.state, replySource: agent.source },
   };
@@ -557,6 +569,8 @@ async function decideAndRoute(
       actionId,
       replyText: decision.replyText,
       followUpQuestion: decision.followUpQuestion,
+      spokenText: spokenText(decision.replyText, decision.followUpQuestion),
+      language: "en",
       closing: false,
     };
   }
@@ -612,6 +626,8 @@ async function decideAndRoute(
     actionId,
     replyText: agent.text,
     followUpQuestion,
+    spokenText: spokenText(agent.text, followUpQuestion),
+    language: conversation.language,
     closing: next.closing,
     conversation: { state: next.state, replySource: agent.source },
   };
@@ -676,7 +692,11 @@ function mergeSignals(
   analysis: ConversationAnalysis,
 ): ExtractedSignals {
   const symptoms = [
-    ...new Set([...deterministic.symptoms, ...analysis.symptoms.map((item) => item.code)]),
+    ...new Set(
+      [...deterministic.symptoms, ...analysis.symptoms.map((item) => item.code)]
+        .map((code) => canonicalSymptomCode(code))
+        .filter((code): code is string => Boolean(code)),
+    ),
   ];
   const adherenceStatus =
     deterministic.adherenceStatus !== "unknown"
@@ -706,7 +726,10 @@ async function storeSignals(
     ...signals.symptoms.map((value) => ({
       kind: "symptom",
       value,
-      severity: analyzed.analysis.symptoms.find((item) => item.code === value)?.severity ?? "unknown",
+      severity:
+        analyzed.analysis.symptoms.find(
+          (item) => canonicalSymptomCode(item.code) === value,
+        )?.severity ?? "unknown",
     })),
     ...(signals.dosageQuestion ? [{ kind: "dosage_question", value: "dosage_change_requested" }] : []),
     ...(signals.emergency ? [{ kind: "emergency", value: "emergency_reported" }] : []),
@@ -867,6 +890,8 @@ export async function recordNoAnswer(actor: Actor, checkInId: string): Promise<S
       actionId: null,
       replyText: "We could not reach you just now. We will try once more.",
       followUpQuestion: null,
+      spokenText: "We could not reach you just now. We will try once more.",
+      language: "en",
       closing: false,
     };
   }

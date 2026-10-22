@@ -3,6 +3,12 @@ import type { AdherenceStatus, DecisionType } from "@/modules/rules-engine/types
 import type { ExtractedSignals } from "@/modules/rules-engine/extract";
 import type { ConversationAnalysis, AnalysisSymptom } from "./analysis";
 import { dosageSafetyCheck, symptomFollowUp, type SupportedLanguage } from "./language";
+import {
+  canonicalSymptomCode,
+  isSevereSymptomReport,
+  symptomMentioned,
+  symptomRetracted,
+} from "@/modules/rules-engine/symptoms";
 
 /**
  * Conversation state for a single check-in. Pure data + pure transitions.
@@ -24,7 +30,13 @@ export type ActiveConcern =
 export type NextStep = ConversationAnalysis["recommendedNextStep"];
 
 export interface ConversationFact {
-  kind: "adherence" | "symptom" | "dosage_question" | "emergency" | "contradiction";
+  kind:
+    | "adherence"
+    | "symptom"
+    | "symptom_retracted"
+    | "dosage_question"
+    | "emergency"
+    | "contradiction";
   value: string;
   severity?: "mild" | "moderate" | "severe" | "unknown";
   sourceTurnId: string;
@@ -36,6 +48,7 @@ export interface ConversationState {
   symptoms: string[];
   severeSymptoms: string[];
   addressedSymptoms: string[];
+  retractedSymptoms: string[];
   contradictions: string[];
   escalation: EscalationState;
   escalationDecision: DecisionType | null;
@@ -62,7 +75,14 @@ const adherenceSchema = z.enum([
 ]);
 
 const factSchema = z.object({
-  kind: z.enum(["adherence", "symptom", "dosage_question", "emergency", "contradiction"]),
+  kind: z.enum([
+    "adherence",
+    "symptom",
+    "symptom_retracted",
+    "dosage_question",
+    "emergency",
+    "contradiction",
+  ]),
   value: z.string(),
   severity: z.enum(["mild", "moderate", "severe", "unknown"]).optional(),
   sourceTurnId: z.string(),
@@ -74,6 +94,7 @@ export const conversationStateSchema = z.object({
   symptoms: z.array(z.string()),
   severeSymptoms: z.array(z.string()),
   addressedSymptoms: z.array(z.string()),
+  retractedSymptoms: z.array(z.string()).default([]),
   contradictions: z.array(z.string()),
   escalation: z.enum(["none", "case_opened", "emergency"]),
   escalationDecision: z
@@ -101,6 +122,7 @@ export function emptyConversationState(): ConversationState {
     symptoms: [],
     severeSymptoms: [],
     addressedSymptoms: [],
+    retractedSymptoms: [],
     contradictions: [],
     escalation: "none",
     escalationDecision: null,
@@ -143,32 +165,18 @@ export interface AdvanceResult {
   closing: boolean;
 }
 
-const SEVERE_PATTERN =
-  /\b(severe|unbearable|intense|much worse|worsening|can'?t stand|cannot stand|vomiting|throwing up)\b/i;
-const NEGATED_SEVERE_PATTERN =
-  /\b(no|not|none|never|without|feel like|feels like)\b[^.!?]{0,30}\b(severe|worse|vomiting|chest pain|trouble breathing)\b/i;
 const CLOSING_INTENT =
-  /\b(nothing else|that'?s all|that is all|i'?m fine|i am fine|all good|no thanks|no thank you)\b/i;
+  /\b(nothing else|nothing more|that'?s all|that is all|i'?m fine|i am fine|all good|no thanks|no thank you|no more questions|don'?t want to answer|do not want to answer|rather not|let'?s finish|end the call)\b/i;
 const BARE_CLOSING = /^\s*(no|nope|thanks|thank you)[.!]?\s*$/i;
 const DENIAL_PATTERN = /\b(no|not|never|without|don'?t|do not)\b/i;
 const DETAIL_PATTERN =
   /\b(mild|moderate|severe|started|this morning|today|yesterday|last night|no vomiting|not vomiting|stopped)\b/i;
 
-const SYMPTOM_WORDS: Record<string, RegExp> = {
-  nausea_or_vomiting: /\b(nausea|nauseous|vomit|vomiting|throwing up|queasy|stomach)\b/i,
-  possible_fever: /\b(fever|feverish|temperature|chills)\b/i,
-  dizziness: /\b(dizzy|dizziness|light-?headed)\b/i,
-  chest_pain: /\bchest\b/i,
-  shortness_of_breath: /\b(breath|breathing)\b/i,
-  headache: /\bheadache|head hurts\b/i,
-  unsteadiness: /\b(unsteady|fell|falling)\b/i,
-  fainting: /\b(faint|passed out|blacked out)\b/i,
-  blurred_vision: /\b(blurred vision|blurry)\b/i,
-};
+export const MAX_SYMPTOM_FOLLOW_UPS = 2;
 
 export function isSevereReport(transcript: string, signals: ExtractedSignals): boolean {
   if (signals.emergency) return true;
-  return SEVERE_PATTERN.test(transcript) && !NEGATED_SEVERE_PATTERN.test(transcript);
+  return isSevereSymptomReport(transcript);
 }
 
 export function isClosingIntent(
@@ -251,7 +259,7 @@ function analysisSymptomFor(
   analysis: ConversationAnalysis | null | undefined,
   symptom: string,
 ): AnalysisSymptom | undefined {
-  return analysis?.symptoms.find((item) => item.code === symptom);
+  return analysis?.symptoms.find((item) => canonicalSymptomCode(item.code) === symptom);
 }
 
 function mergeSymptoms(
@@ -261,8 +269,14 @@ function mergeSymptoms(
   sourceTurnId: string,
   severe: boolean,
 ): void {
-  for (const symptom of input.signals.symptoms) {
+  for (const raw of input.signals.symptoms) {
+    const symptom = canonicalSymptomCode(raw);
+    if (!symptom) continue;
     const existed = state.symptoms.includes(symptom);
+    const wasRetracted = state.retractedSymptoms.includes(symptom);
+    if (wasRetracted) {
+      state.retractedSymptoms = state.retractedSymptoms.filter((item) => item !== symptom);
+    }
     addUnique(state.symptoms, symptom);
     const fromAnalysis = analysisSymptomFor(input.analysis, symptom);
     const severity = fromAnalysis?.severity ?? (severe ? "severe" : "unknown");
@@ -279,19 +293,41 @@ function mergeSymptoms(
 
   if (DENIAL_PATTERN.test(transcript)) {
     for (const symptom of state.symptoms) {
+      if (!symptomMentioned(transcript, symptom)) continue;
+      if (symptomRetracted(transcript, symptom)) continue;
       const word = symptom.replaceAll("_", " ");
-      const pattern = SYMPTOM_WORDS[symptom] ?? new RegExp(`\\b${word}\\b`, "i");
-      if (pattern.test(transcript)) {
-        const contradiction = `Patient later denied ${word} after reporting it.`;
-        addUnique(state.contradictions, contradiction);
-        addFact(state, {
-          kind: "contradiction",
-          value: contradiction,
-          sourceTurnId,
-          sourceText: transcript,
-        });
-      }
+      const contradiction = `Patient later denied ${word} after reporting it.`;
+      addUnique(state.contradictions, contradiction);
+      addFact(state, {
+        kind: "contradiction",
+        value: contradiction,
+        sourceTurnId,
+        sourceText: transcript,
+      });
     }
+  }
+}
+
+function applyRetractions(
+  state: ConversationState,
+  transcript: string,
+  sourceTurnId: string,
+): void {
+  for (const symptom of [...state.symptoms]) {
+    if (!symptomRetracted(transcript, symptom)) continue;
+    state.symptoms = state.symptoms.filter((item) => item !== symptom);
+    state.severeSymptoms = state.severeSymptoms.filter((item) => item !== symptom);
+    state.openQuestions = state.openQuestions.filter(
+      (question) => question !== `symptom_details:${symptom}`,
+    );
+    addUnique(state.addressedSymptoms, symptom);
+    addUnique(state.retractedSymptoms, symptom);
+    addFact(state, {
+      kind: "symptom_retracted",
+      value: symptom,
+      sourceTurnId,
+      sourceText: transcript,
+    });
   }
 }
 
@@ -331,34 +367,43 @@ function mergeQuestions(
 function resolveSymptomQuestions(
   state: ConversationState,
   transcript: string,
-  signals: ExtractedSignals,
   input: AdvanceInput,
   closingIntent: boolean,
   severe: boolean,
   language: SupportedLanguage,
+  newSymptomThisTurn: boolean,
+  previouslyReported: Set<string>,
 ): void {
   const addressedByModel = new Set(
     (input.analysis?.addressedSymptoms ?? [])
-      .map((code) => code.replace(/^symptom_details:/, "").trim().toLowerCase())
-      .filter((code) => state.symptoms.includes(code)),
+      .map((code) => canonicalSymptomCode(code))
+      .filter(
+        (code): code is string =>
+          code !== null &&
+          state.symptoms.includes(code) &&
+          previouslyReported.has(code),
+      ),
   );
   const hasModelAddresses = addressedByModel.size > 0;
-  const hasNewSymptom = signals.symptoms.some((symptom) => !state.symptoms.includes(symptom));
   const details = closingIntent
     ? state.openQuestions.filter((q) => q.startsWith("symptom_details:"))
     : state.openQuestions.filter(
         (q) => q.startsWith("symptom_details:") && state.askedQuestions.includes(q),
       );
+  const singlePending = details.length === 1;
 
   for (const question of details) {
     const symptom = question.slice("symptom_details:".length);
-    const pattern = SYMPTOM_WORDS[symptom];
-    const mentionsSymptom = pattern ? pattern.test(transcript) : false;
+    const mentionsSymptom = symptomMentioned(transcript, symptom);
     const looksLikeAnswer =
-      !hasModelAddresses && !hasNewSymptom && (mentionsSymptom || DETAIL_PATTERN.test(transcript));
-    if (!closingIntent && !addressedByModel.has(symptom) && !looksLikeAnswer) continue;
+      addressedByModel.has(symptom) ||
+      mentionsSymptom ||
+      (!hasModelAddresses &&
+        !newSymptomThisTurn &&
+        singlePending &&
+        DETAIL_PATTERN.test(transcript));
+    if (!closingIntent && !looksLikeAnswer) continue;
 
-    state.followUpAttempts[question] = (state.followUpAttempts[question] ?? 0) + 1;
     if (closingIntent) {
       addUnique(state.unansweredQuestions, questionText(question, language));
       state.openQuestions = state.openQuestions.filter((q) => q !== question);
@@ -412,13 +457,48 @@ function refreshActiveConcerns(state: ConversationState): void {
   state.activeConcerns = next;
 }
 
+function buildSummary(state: ConversationState): string {
+  const parts = [
+    state.medicationStatus === "unknown"
+      ? "Medication: unknown"
+      : `Medication: ${state.medicationStatus.replaceAll("_", " ")}`,
+    state.symptoms.length > 0
+      ? `Active symptoms: ${state.symptoms.join(", ")}`
+      : "Active symptoms: none",
+    state.severeSymptoms.length > 0 ? `Severe: ${state.severeSymptoms.join(", ")}` : null,
+    state.retractedSymptoms.length > 0
+      ? `Retracted: ${state.retractedSymptoms.join(", ")}`
+      : null,
+    state.medicationQuestions.length > 0 ? "Dosage question recorded" : null,
+    state.openQuestions.length > 0
+      ? `Open questions: ${state.openQuestions
+          .map((question) => question.replace("symptom_details:", ""))
+          .join(", ")}`
+      : null,
+    state.unansweredQuestions.length > 0
+      ? `Unanswered: ${state.unansweredQuestions.length}`
+      : null,
+  ].filter(Boolean);
+  return parts.join(". ");
+}
+
+function finish(
+  state: ConversationState,
+  followUpQuestion: string | null,
+  closing: boolean,
+  nextStep: NextStep,
+): AdvanceResult {
+  state.summary = buildSummary(state);
+  state.recommendedNextStep = nextStep;
+  return { state, followUpQuestion, closing };
+}
+
 function close(state: ConversationState, reason: EndReason): AdvanceResult {
   state.closed = true;
   state.endReason = reason;
   state.openQuestions = [];
-  state.recommendedNextStep = "close";
   refreshActiveConcerns(state);
-  return { state, followUpQuestion: null, closing: true };
+  return finish(state, null, true, state.escalation === "none" ? "close" : "escalate");
 }
 
 /**
@@ -437,6 +517,7 @@ export function advanceConversation(
     symptoms: [...previous.symptoms],
     severeSymptoms: [...previous.severeSymptoms],
     addressedSymptoms: [...previous.addressedSymptoms],
+    retractedSymptoms: [...previous.retractedSymptoms],
     contradictions: [...previous.contradictions],
     openQuestions: [...previous.openQuestions],
     askedQuestions: [...previous.askedQuestions],
@@ -449,8 +530,6 @@ export function advanceConversation(
   };
 
   state.analysisSource = input.analysisSource ?? null;
-  state.recommendedNextStep = input.analysis?.recommendedNextStep ?? null;
-  if (input.analysis?.summary) state.summary = input.analysis.summary;
 
   if (state.closed) return close(state, state.endReason ?? "completed");
 
@@ -460,31 +539,29 @@ export function advanceConversation(
   const closingIntent = isClosingIntent(input.transcript, input.signals, hasAskedSymptomQuestion);
   const severe =
     isSevereReport(input.transcript, input.signals) ||
-    (input.analysis?.symptoms.some((item) => item.severity === "severe") ?? false);
+    (input.analysis?.symptoms.some(
+      (item) =>
+        item.severity === "severe" && canonicalSymptomCode(item.code) !== null,
+    ) ?? false);
+  const newSymptomThisTurn = input.signals.symptoms.some((symptom) => {
+    const code = canonicalSymptomCode(symptom);
+    return code !== null && !previous.symptoms.includes(code);
+  });
 
   mergeAdherence(state, input, sourceTurnId);
+  mergeSymptoms(state, input, input.transcript, sourceTurnId, severe);
+  mergeQuestions(state, input, sourceTurnId);
+  applyRetractions(state, input.transcript, sourceTurnId);
   resolveSymptomQuestions(
     state,
     input.transcript,
-    input.signals,
     input,
     closingIntent,
     severe,
     language,
+    newSymptomThisTurn,
+    new Set(previous.symptoms),
   );
-  mergeSymptoms(state, input, input.transcript, sourceTurnId, severe);
-  mergeQuestions(state, input, sourceTurnId);
-
-  if (!state.summary) {
-    const parts = [
-      state.medicationStatus === "unknown"
-        ? "Medication: unknown"
-        : `Medication: ${state.medicationStatus.replaceAll("_", " ")}`,
-      state.symptoms.length > 0 ? `Symptoms: ${state.symptoms.join(", ")}` : null,
-      state.medicationQuestions.length > 0 ? "Dosage question recorded" : null,
-    ].filter(Boolean);
-    state.summary = parts.join(". ");
-  }
 
   if (input.escalated && state.escalation === "none") state.escalation = "case_opened";
   state.escalationDecision = higherConcern(state.escalationDecision, input.decision);
@@ -502,7 +579,7 @@ export function advanceConversation(
   refreshActiveConcerns(state);
 
   if (input.decision === "clarification_required" && state.symptoms.length === 0) {
-    return { state, followUpQuestion: null, closing: false };
+    return finish(state, null, false, "reply_only");
   }
 
   if (closingIntent) {
@@ -514,14 +591,18 @@ export function advanceConversation(
     return close(state, input.escalated ? "escalated" : "completed");
   }
 
-  const pendingSymptom = state.openQuestions.find((q) => q.startsWith("symptom_details:"));
-  if (pendingSymptom) {
+  while (true) {
+    const pendingSymptom = state.openQuestions.find((q) => q.startsWith("symptom_details:"));
+    if (!pendingSymptom) break;
+    const attempts = state.followUpAttempts[pendingSymptom] ?? 0;
+    if (attempts >= MAX_SYMPTOM_FOLLOW_UPS) {
+      addUnique(state.unansweredQuestions, questionText(pendingSymptom, language));
+      state.openQuestions = state.openQuestions.filter((q) => q !== pendingSymptom);
+      continue;
+    }
+    state.followUpAttempts[pendingSymptom] = attempts + 1;
     addUnique(state.askedQuestions, pendingSymptom);
-    return {
-      state,
-      followUpQuestion: questionText(pendingSymptom, language),
-      closing: false,
-    };
+    return finish(state, questionText(pendingSymptom, language), false, "ask_followup");
   }
 
   if (
@@ -530,11 +611,7 @@ export function advanceConversation(
     !state.askedQuestions.includes("dosage_safety_check")
   ) {
     addUnique(state.askedQuestions, "dosage_safety_check");
-    return {
-      state,
-      followUpQuestion: questionText("dosage_safety_check", language),
-      closing: false,
-    };
+    return finish(state, questionText("dosage_safety_check", language), false, "ask_followup");
   }
 
   return close(state, input.escalated ? "escalated" : "completed");

@@ -1,4 +1,5 @@
 import type { AdherenceStatus } from "./types";
+import { detectSymptoms, removeNegatedSymptoms } from "./symptoms";
 
 export interface ExtractedSignals {
   adherenceStatus: AdherenceStatus;
@@ -8,25 +9,6 @@ export interface ExtractedSignals {
   /** Red-flag phrases that take the emergency pathway (doc: severity combinations). */
   emergency: boolean;
 }
-
-const SYMPTOM_PATTERNS: readonly [RegExp, string][] = [
-  [/\b(dizz(y|iness)|light-?headed|woozy)\b/i, "dizziness"],
-  [
-    /\b(nausea|nauseous|queasy|vomit(ing|ed)?|feel like vomiting|throwing up|sick to my stomach|upset stomach|stomach (is )?upset)\b/i,
-    "nausea_or_vomiting",
-  ],
-  [/\b(fever|feverish|high temperature|temperature|chills)\b/i, "possible_fever"],
-  [/\bchest (pain|pressure|tightness)\b/i, "chest_pain"],
-  [/\b(short(ness)? of breath|can'?t breathe|breathless)\b/i, "shortness_of_breath"],
-  [/\bblurred vision\b/i, "blurred_vision"],
-  [/\b(fainted|fainting|passed out|black(ed)? out)\b/i, "fainting"],
-  [/\b(headache|head hurts)\b/i, "headache"],
-  [/\b(fell|falling|unsteady)\b/i, "unsteadiness"],
-];
-
-/** Denied symptoms are removed before matching; a denial in one clause must not hide another. */
-const NEGATED_SYMPTOM =
-  /\b(no|not|never|without|denies|denied)\b[^.!?]{0,30}\b(fever|nausea|nauseous|vomit(ing)?|dizz(y|iness)|headache|chest pain|shortness of breath)\b/gi;
 
 const DOSAGE_PATTERNS: RegExp[] = [
   /\bdouble (the |my )?(dose|doses|tablets?|pills?)\b/i,
@@ -92,8 +74,8 @@ const AMBIGUOUS_PATTERNS: RegExp[] = [
  */
 export function extractSignals(transcript: string): ExtractedSignals {
   const text = transcript.trim();
-  const symptomText = text.replace(NEGATED_SYMPTOM, " ");
-  const symptoms = SYMPTOM_PATTERNS.filter(([re]) => re.test(symptomText)).map(([, label]) => label);
+  const symptomText = removeNegatedSymptoms(text);
+  const symptoms = detectSymptoms(symptomText);
   const dosageQuestion = DOSAGE_PATTERNS.some((re) => re.test(text));
   // Remove explicitly denied red-flag phrases, then test whatever remains so
   // "no chest pain, but I can't breathe" still wins.

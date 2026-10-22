@@ -9,7 +9,7 @@ VenLoop places a simulated morning check-in call to an older adult, follows up o
 <p>
   <img alt="Next.js 16" src="https://img.shields.io/badge/Next.js-16-000000?style=flat-square&logo=nextdotjs&logoColor=white">
   <img alt="TypeScript strict" src="https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white">
-  <img alt="Tests passing" src="https://img.shields.io/badge/tests-89%20passing-1E7B4B?style=flat-square">
+  <img alt="Tests passing" src="https://img.shields.io/badge/tests-112%20passing-1E7B4B?style=flat-square">
   <img alt="E2E passing" src="https://img.shields.io/badge/e2e-9%20passing-1E7B4B?style=flat-square">
   <img alt="Status" src="https://img.shields.io/badge/status-hackathon%20demo-E8A33D?style=flat-square">
 </p>
@@ -177,7 +177,7 @@ Last verified locally: **22 Oct 2026**.
 |---|---|---|
 | Lint | `pnpm lint` | Exit 0 |
 | Types | `pnpm typecheck` | Exit 0 |
-| Unit + integration | `pnpm test` | **89 passed / 10 files** |
+| Unit + integration | `pnpm test` | **112 passed / 13 files + 1 live opt-in skipped** |
 | Browser E2E | `pnpm test:e2e` | **9 passed** |
 | Production build | `pnpm build` | Exit 0, 35 static pages generated |
 | Official scenarios | Admin → Official runs | TC1–TC5 passing through the real pipeline |
@@ -200,7 +200,7 @@ The simulator also includes **TC6**, a one-turn reassessment demo combining dizz
 
 - **Caregiver dashboard**: assigned patients, check-ins, open cases, priority watchlist, schedule.
 - **Patient detail**: medications, care plan, calendar, care logs, contacts, care notes.
-- **Call simulator**: English / Hindi / Marathi selector, scenario chips, browser speech fallback, optional VerbX voice, persistent simulated labeling.
+- **Call simulator**: English / Hindi / Marathi selector, scenario chips, browser streaming speech with silence auto-submit, optional VerbX voice, persistent simulated labeling.
 - **Cumulative conversation state**: symptoms, severity, addressed/unanswered questions, contradictions, escalation, facts with source turn IDs.
 - **Escalation cases**: acknowledge → category action → resolve with note.
 - **Evidence console**: rule trace, original transcript, extracted signals, delivery attempts, expected-vs-observed verification, JSON export.
@@ -211,7 +211,7 @@ The simulator also includes **TC6**, a one-turn reassessment demo combining dizz
 
 - Scripted copy exists for English, Hindi, and Marathi.
 - With VerbX configured, typed non-English input can be translated for extraction, and replies can be spoken.
-- Without VerbX, non-English speech falls back to browser recognition; the app never guesses adherence from an untranslated sentence.
+- Browser streaming speech is the primary microphone path; VerbX batch STT is the fallback when the browser API is unavailable.
 - VerbX TTS and translation were verified live. VerbX STT was unavailable upstream during verification (`provider_outage`), so live STT is **not verified**.
 
 ## Tech stack
@@ -312,7 +312,7 @@ Requires Node 22+ and a hosted Supabase project.
 - Not clinically validated. Do not use with real patients.
 - Real telephony and notifications are intentionally not enabled.
 - Deployment target and smoke tests are not configured yet.
-- VerbX STT was unavailable upstream during verification; browser speech is the fallback.
+- VerbX STT was unavailable upstream during verification; browser streaming speech is primary and VerbX batch STT is the fallback.
 - Rate limiting and LLM concurrency caps are per-process, not distributed.
 - Official failure-injection coverage is partial: provider timeout and DB-down scenarios are not injected.
 - TC6 is a simulator demo, not an official PRD test case.

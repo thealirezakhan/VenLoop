@@ -197,6 +197,34 @@ describe("conversation state (multi-turn safety gate)", () => {
     expect(result.closing).toBe(false);
   });
 
+  it("handles a multi-signal sentence, asks one follow-up, then ends the call", () => {
+    const turnOne = turn(
+      emptyConversationState(),
+      "I took the pills but I feel like having a fever. Should I take another pill?",
+      "dosage_safety_response",
+      true,
+    );
+    expect(turnOne.state.medicationStatus).toBe("reported_taken");
+    expect(turnOne.state.symptoms).toEqual(["possible_fever"]);
+    expect(turnOne.state.medicationQuestions).toEqual(["dosage_change_requested"]);
+    expect(turnOne.state.facts.map((fact) => fact.kind)).toEqual(
+      expect.arrayContaining(["adherence", "symptom", "dosage_question"]),
+    );
+    expect(turnOne.followUpQuestion).toMatch(/when did the fever start/i);
+    expect(turnOne.closing).toBe(false);
+
+    const turnTwo = turn(
+      turnOne.state,
+      "It started this morning and it is mild.",
+      "dosage_safety_response",
+      true,
+    );
+    expect(turnTwo.state.addressedSymptoms).toEqual(["possible_fever"]);
+    expect(turnTwo.followUpQuestion).toBeNull();
+    expect(turnTwo.closing).toBe(true);
+    expect(turnTwo.state.endReason).toBe("escalated");
+  });
+
   it("merges fever into the existing concern without losing nausea", () => {
     const turnOne = turn(
       emptyConversationState(),

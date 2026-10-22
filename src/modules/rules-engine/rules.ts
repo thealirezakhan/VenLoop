@@ -62,7 +62,7 @@ export function evaluateDecision(input: DecisionInput): DecisionResult {
     return result(
       "dosage_safety_response",
       REASON_CODES.DOSAGE_QUESTION_BLOCKED,
-      "Dosage-change questions are always blocked; refer to doctor or pharmacist.",
+      "Dosage-change questions are always blocked; route to human review only.",
       RESPONSE_KEYS.DOSAGE_BLOCK,
       [
         {
@@ -72,7 +72,7 @@ export function evaluateDecision(input: DecisionInput): DecisionResult {
           priority: "urgent",
         },
       ],
-      "I cannot advise you to change your dose. Please contact your doctor or pharmacist before making any change. We have noted your question for your caregiver.",
+      "I am not able to advise on changing your dose. I have noted your question and I will let your caregiver know.",
       CLOSING_QUESTION,
     );
   }
@@ -92,7 +92,7 @@ export function evaluateDecision(input: DecisionInput): DecisionResult {
           priority: "urgent",
         },
       ],
-      `I am sorry you are feeling ${input.symptoms[0] ?? "unwell"}. Please sit or lie down somewhere safe. We cannot give medical advice, but we have alerted your caregiver to follow up with you.`,
+      `I am sorry you are not feeling well. I have noted the ${(input.symptoms[0] ?? "symptom").replaceAll("_", " ")} and I will let your caregiver know.`,
       CLOSING_QUESTION,
     );
   }
@@ -127,7 +127,7 @@ export function evaluateDecision(input: DecisionInput): DecisionResult {
       "Self-reported taken; recorded as a report, not proof of ingestion.",
       RESPONSE_KEYS.ACK_TAKEN,
       [],
-      "Thank you. We have recorded that you took your medication.",
+      "Thank you. I have recorded that you took your medicine.",
       null,
     );
   }
@@ -139,7 +139,7 @@ export function evaluateDecision(input: DecisionInput): DecisionResult {
       "Self-reported not taken; recorded for caregiver review.",
       RESPONSE_KEYS.ACK_NOT_TAKEN,
       [],
-      "Thank you for letting us know. We have recorded that you have not taken your medication yet. Please follow your care plan, and contact your doctor or pharmacist if you are unsure what to do.",
+      "Thank you for letting me know. I have recorded that you have not taken your medicine yet, and I will let your caregiver know.",
       null,
     );
   }
@@ -155,8 +155,8 @@ function clarification(): DecisionResult {
     "Answer was unclear; ask one clarification question. Never map uncertainty to taken.",
     RESPONSE_KEYS.CLARIFY_ASK_AGAIN,
     [],
-    "Sorry, I did not quite understand.",
-    "Could you tell me again whether you have taken your medication or not?",
+    "I am sorry, I did not catch that.",
+    "Could you tell me again whether you have taken your medicine yet?",
   );
 }
 

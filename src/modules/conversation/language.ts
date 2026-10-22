@@ -84,104 +84,96 @@ export function symptomName(symptom: string, language: SupportedLanguage): strin
 const COPY: Record<SupportedLanguage, Copy> = {
   en: {
     greeting:
-      "Good morning! This is your VenLoop medication check-in. Have you taken your medication?",
-    ackTaken: "Thank you for confirming. I have recorded that you took your medication.",
+      "Good morning. This is VenLoop. It is time for your medication check-in. Have you taken your medicine yet?",
+    ackTaken: "Thank you. I have recorded that you took your medicine.",
     ackNotTaken:
-      "Thank you for telling me. I have recorded that you have not taken your medication yet. Please follow your care plan, and contact your doctor or pharmacist if you are unsure what to do.",
-    clarify: "Sorry, I did not quite understand.",
-    clarifyQuestion: "Could you tell me again whether you have taken your medication or not?",
+      "Thank you for telling me. I have recorded that you have not taken it yet, and I will let your caregiver know.",
+    clarify: "I am sorry, I did not catch that.",
+    clarifyQuestion: "Could you tell me again whether you have taken your medicine yet?",
     dosage:
-      "I cannot advise you to change your dose. Please contact your doctor or pharmacist before making any change. We have noted your question for your caregiver.",
+      "I am not able to advise on changing your dose. I have noted your question and I will let your caregiver know.",
     symptom:
-      "I am sorry you are feeling unwell. Please sit or lie down somewhere safe. We cannot give medical advice, but we have noted this for your caregiver to follow up.",
+      "I am sorry you are not feeling well. I have noted that, and I will let your caregiver know.",
     severeSymptom:
-      "Thank you for telling me. Please contact your doctor or care team today about these symptoms. We have noted this for your caregiver to follow up.",
+      "Thank you for telling me. I have noted how you are feeling, and I am letting your caregiver know now.",
     emergency:
-      "This may be an emergency. Please contact your local emergency services now, or ask someone nearby to help you. We are alerting your contacts straight away.",
-    unreachable: "We could not reach you just now. We will try once more.",
-    unresolved: "We were not able to confirm your medication today. Your caregiver will follow up.",
-    followUpSymptom: (name) =>
-      `When did the ${name} start, and is it mild or severe — for example, are you vomiting, or having chest pain or trouble breathing?`,
-    followUpGeneric:
-      "When did that start, and is it mild or severe — for example, are you vomiting, or having chest pain or trouble breathing?",
-    followUpDosage: "Is there anything else about how you are feeling that your caregiver should know?",
+      "This may be an emergency. Please call your local emergency services now, or ask someone nearby for help. I am alerting your caregiver.",
+    unreachable: "I am sorry we could not reach you. I will try once more.",
+    unresolved: "We could not confirm your medicine today. I will let your caregiver know.",
+    followUpSymptom: (name) => `When did the ${name} start, and is it mild or severe?`,
+    followUpGeneric: "When did that start, and is it mild or severe?",
+    followUpDosage: "Is there anything else you would like me to pass on to your caregiver?",
     dosageSafetyCheck:
       "Before we finish, are you having any symptoms right now, such as dizziness, nausea, or trouble breathing?",
     alreadyEnded: "This simulated call has already ended. Thank you.",
     closingNoAction: (name) =>
-      `Thank you for speaking with me, ${name}. Your check-in is recorded. Please take care. Goodbye.`,
+      `Thank you for talking with me, ${name}. Your check-in is recorded. Take care. Goodbye.`,
     closingWithAction: (name) =>
-      `Thank you for speaking with me, ${name}. We have recorded your concerns and arranged follow-up for your caregiver. Please take care. Goodbye.`,
+      `Thank you for talking with me, ${name}. We have recorded your concerns and passed them to your caregiver. Take care. Goodbye.`,
     closingUnanswered: (name) =>
-      `Thank you for speaking with me, ${name}. We have recorded the concerns you shared, and your caregiver will follow up on the details you did not answer. Please take care. Goodbye.`,
+      `Thank you for talking with me, ${name}. We have recorded the concerns you shared, and your caregiver will follow up. Take care. Goodbye.`,
     incomplete: "Thank you. I have noted that for your caregiver.",
   },
   hi: {
-    greeting: "सुप्रभात! यह आपकी VenLoop दवा जाँच है। क्या आपने अपनी दवा ली है?",
-    ackTaken: "पुष्टि करने के लिए धन्यवाद। मैंने दर्ज कर लिया है कि आपने अपनी दवा ली है।",
+    greeting: "सुप्रभात। यह VenLoop है। आपकी दवा की जाँच का समय है। क्या आपने अपनी दवा ली है?",
+    ackTaken: "धन्यवाद। मैंने दर्ज कर लिया है कि आपने अपनी दवा ली है।",
     ackNotTaken:
-      "बताने के लिए धन्यवाद। मैंने दर्ज कर लिया है कि आपने अभी अपनी दवा नहीं ली है। कृपया अपनी देखभाल योजना का पालन करें, और अगर आपको समझ न आए तो अपने डॉक्टर या फार्मासिस्ट से बात करें।",
-    clarify: "क्षमा करें, मैं ठीक से समझ नहीं पाया।",
+      "बताने के लिए धन्यवाद। मैंने दर्ज कर लिया है कि आपने अभी दवा नहीं ली है, और मैं आपके देखभालकर्ता को बता दूँगा।",
+    clarify: "क्षमा करें, मैं समझ नहीं पाया।",
     clarifyQuestion: "क्या आप फिर से बता सकते हैं कि आपने अपनी दवा ली है या नहीं?",
     dosage:
-      "मैं आपको दवा की खुराक बदलने की सलाह नहीं दे सकता। कोई भी बदलाव करने से पहले कृपया अपने डॉक्टर या फार्मासिस्ट से बात करें। हमने आपका सवाल आपके देखभालकर्ता के लिए दर्ज कर लिया है।",
+      "मैं दवा की खुराक बदलने की सलाह नहीं दे सकता। मैंने आपका सवाल दर्ज कर लिया है और आपके देखभालकर्ता को बता दूँगा।",
     symptom:
-      "मुझे खेद है कि आप अस्वस्थ महसूस कर रहे हैं। कृपया किसी सुरक्षित जगह पर बैठें या लेटें। हम चिकित्सकीय सलाह नहीं दे सकते, लेकिन हमने इसे आपके देखभालकर्ता के फॉलो-अप के लिए दर्ज कर लिया है।",
+      "मुझे खेद है कि आप अस्वस्थ महसूस कर रहे हैं। मैंने यह दर्ज कर लिया है और आपके देखभालकर्ता को बता दूँगा।",
     severeSymptom:
-      "बताने के लिए धन्यवाद। कृपया आज ही इन लक्षणों के बारे में अपने डॉक्टर या देखभाल टीम से संपर्क करें। हमने इसे आपके देखभालकर्ता के फॉलो-अप के लिए दर्ज कर लिया है।",
+      "बताने के लिए धन्यवाद। मैंने दर्ज कर लिया है कि आप कैसा महसूस कर रहे हैं, और मैं अभी आपके देखभालकर्ता को बता रहा हूँ।",
     emergency:
-      "यह आपातकाल हो सकता है। कृपया अभी अपनी स्थानीय आपातकालीन सेवा से संपर्क करें, या पास किसी से मदद मांगें। हम तुरंत आपके संपर्कों को सूचित कर रहे हैं।",
-    unreachable: "हम अभी आपसे संपर्क नहीं कर सके। हम एक बार और प्रयास करेंगे।",
-    unresolved:
-      "हम आज आपकी दवा की पुष्टि नहीं कर सके। आपका देखभालकर्ता आगे संपर्क करेगा।",
-    followUpSymptom: (name) =>
-      `${name} कब शुरू हुई, और यह हल्की है या गंभीर — जैसे कि आप उल्टी कर रहे हैं, या सीने में दर्द या सांस लेने में तकलीफ है?`,
-    followUpGeneric:
-      "यह कब शुरू हुआ, और यह हल्का है या गंभीर — जैसे कि आप उल्टी कर रहे हैं, या सीने में दर्द या सांस लेने में तकलीफ है?",
-    followUpDosage: "क्या आपकी सेहत के बारे में कुछ और है जो आपके देखभालकर्ता को पता होना चाहिए?",
+      "यह आपातकाल हो सकता है। कृपया अभी अपनी स्थानीय आपातकालीन सेवा को कॉल करें, या पास किसी से मदद माँगें। मैं आपके देखभालकर्ता को सूचित कर रहा हूँ।",
+    unreachable: "क्षमा करें, हम आपसे संपर्क नहीं कर सके। मैं एक बार और प्रयास करूँगा।",
+    unresolved: "हम आज आपकी दवा की पुष्टि नहीं कर सके। मैं आपके देखभालकर्ता को बता दूँगा।",
+    followUpSymptom: (name) => `${name} कब शुरू हुआ, और यह हल्का है या गंभीर?`,
+    followUpGeneric: "यह कब शुरू हुआ, और यह हल्का है या गंभीर?",
+    followUpDosage: "क्या कुछ और है जो आप अपने देखभालकर्ता तक पहुँचाना चाहेंगे?",
     dosageSafetyCheck:
       "समाप्त करने से पहले, क्या आपको अभी कोई लक्षण है, जैसे चक्कर, मतली, या सांस लेने में तकलीफ?",
     alreadyEnded: "यह सिम्युलेटेड कॉल पहले ही समाप्त हो चुकी है। धन्यवाद।",
     closingNoAction: (name) =>
       `मेरे साथ बात करने के लिए धन्यवाद, ${name}। आपकी जाँच दर्ज हो गई है। अपना ख्याल रखें। नमस्ते।`,
     closingWithAction: (name) =>
-      `मेरे साथ बात करने के लिए धन्यवाद, ${name}। हमने आपकी चिंताएँ दर्ज कर ली हैं और आपके देखभालकर्ता के लिए फॉलो-अप की व्यवस्था की है। अपना ख्याल रखें। नमस्ते।`,
+      `मेरे साथ बात करने के लिए धन्यवाद, ${name}। हमने आपकी चिंताएँ दर्ज कर ली हैं और आपके देखभालकर्ता तक पहुँचा दी हैं। अपना ख्याल रखें। नमस्ते।`,
     closingUnanswered: (name) =>
-      `मेरे साथ बात करने के लिए धन्यवाद, ${name}। हमने आपकी बताई चिंताएँ दर्ज कर ली हैं, और जिन विवरणों का जवाब नहीं मिला उनके लिए आपका देखभालकर्ता आगे संपर्क करेगा। अपना ख्याल रखें। नमस्ते।`,
-    incomplete: "धन्यवाद। मैंने इसे आपके देखभालकर्ता के लिए दर्ज कर लिया है।",
+      `मेरे साथ बात करने के लिए धन्यवाद, ${name}। हमने आपकी बताई चिंताएँ दर्ज कर ली हैं, और आपका देखभालकर्ता आगे संपर्क करेगा। अपना ख्याल रखें। नमस्ते।`,
+    incomplete: "धन्यवाद। मैंने यह आपके देखभालकर्ता के लिए दर्ज कर लिया है।",
   },
   mr: {
-    greeting: "सुप्रभात! ही तुमची VenLoop औषध तपासणी आहे. तुम्ही तुमची औषध घेतली आहे का?",
-    ackTaken: "पुष्टी केल्याबद्दल धन्यवाद. तुम्ही तुमची औषध घेतली हे मी नोंदवले आहे.",
+    greeting: "सुप्रभात. हे VenLoop आहे. तुमच्या औषधाच्या तपासणीची वेळ झाली आहे. तुम्ही तुमचे औषध घेतले आहे का?",
+    ackTaken: "धन्यवाद. तुम्ही तुमचे औषध घेतले हे मी नोंदवले आहे.",
     ackNotTaken:
-      "सांगितल्याबद्दल धन्यवाद. तुम्ही अजून तुमची औषध घेतली नाही हे मी नोंदवले आहे. कृपया तुमच्या काळजी योजनेचे पालन करा, आणि शंका असल्यास तुमच्या डॉक्टरांशी किंवा फार्मासिस्टशी बोला.",
-    clarify: "क्षमस्व, मला नीट समजले नाही.",
-    clarifyQuestion: "तुम्ही तुमची औषध घेतली आहे की नाही, ते पुन्हा सांगू शकता का?",
+      "सांगितल्याबद्दल धन्यवाद. तुम्ही अजून औषध घेतले नाही हे मी नोंदवले आहे, आणि मी तुमच्या काळजीवाहकाला सांगेन.",
+    clarify: "क्षमस्व, मला समजले नाही.",
+    clarifyQuestion: "तुम्ही तुमचे औषध घेतले आहे की नाही, ते पुन्हा सांगू शकता का?",
     dosage:
-      "मी तुम्हाला औषधाची मात्रा बदलण्याचा सल्ला देऊ शकत नाही. कोणताही बदल करण्यापूर्वी कृपया तुमच्या डॉक्टरांशी किंवा फार्मासिस्टशी बोला. आम्ही तुमचा प्रश्न तुमच्या काळजीवाहकासाठी नोंदवला आहे.",
+      "मी औषधाची मात्रा बदलण्याचा सल्ला देऊ शकत नाही. मी तुमचा प्रश्न नोंदवला आहे आणि तुमच्या काळजीवाहकाला सांगेन.",
     symptom:
-      "तुम्हाला बरे वाटत नसल्याबद्दल मला वाईट वाटते. कृपया सुरक्षित जागी बसा किंवा झोपा. आम्ही वैद्यकीय सल्ला देऊ शकत नाही, पण तुमच्या काळजीवाहकासाठी हे पाठपुराव्यासाठी नोंदवले आहे.",
+      "तुम्हाला बरे वाटत नसल्याबद्दल मला वाईट वाटते. मी हे नोंदवले आहे आणि तुमच्या काळजीवाहकाला सांगेन.",
     severeSymptom:
-      "सांगितल्याबद्दल धन्यवाद. कृपया आजच या लक्षणांबद्दल तुमच्या डॉक्टरांशी किंवा काळजी पथकाशी संपर्क साधा. आम्ही हे तुमच्या काळजीवाहकासाठी पाठपुराव्यासाठी नोंदवले आहे.",
+      "सांगितल्याबद्दल धन्यवाद. तुम्हाला कसे वाटत आहे ते मी नोंदवले आहे, आणि मी आत्ता तुमच्या काळजीवाहकाला सांगत आहे.",
     emergency:
-      "ही आपत्कालीन परिस्थिती असू शकते. कृपया आत्ताच तुमच्या स्थानिक आपत्कालीन सेवेशी संपर्क साधा किंवा जवळच्या कोणाकडून मदत मागा. आम्ही तुमच्या संपर्कांना लगेच सूचित करत आहोत.",
-    unreachable: "आम्ही आत्ता तुमच्याशी संपर्क साधू शकलो नाही. आम्ही आणखी एकदा प्रयत्न करू.",
-    unresolved:
-      "आम्ही आज तुमच्या औषधाची पुष्टी करू शकलो नाही. तुमचे काळजीवाहक पुढे संपर्क साधतील.",
-    followUpSymptom: (name) =>
-      `${name} कधी सुरू झाली, आणि ती सौम्य आहे की गंभीर — उदाहरणार्थ, तुम्ही उलटी करत आहात का, किंवा छातीत दुखत आहे किंवा श्वास घेण्यास त्रास होत आहे का?`,
-    followUpGeneric:
-      "हे कधी सुरू झाले, आणि ते सौम्य आहे की गंभीर — उदाहरणार्थ, तुम्ही उलटी करत आहात का, किंवा छातीत दुखत आहे किंवा श्वास घेण्यास त्रास होत आहे का?",
-    followUpDosage: "तुमच्या प्रकृतीबद्दल अजून काही आहे का जे तुमच्या काळजीवाहकाला माहीत असावे?",
+      "ही आपत्कालीन परिस्थिती असू शकते. कृपया आत्ताच तुमच्या स्थानिक आपत्कालीन सेवेला कॉल करा, किंवा जवळच्या कोणाकडून मदत मागा. मी तुमच्या काळजीवाहकाला सूचित करत आहे.",
+    unreachable: "क्षमस्व, आम्ही तुमच्याशी संपर्क साधू शकलो नाही. मी आणखी एकदा प्रयत्न करेन.",
+    unresolved: "आम्ही आज तुमच्या औषधाची पुष्टी करू शकलो नाही. मी तुमच्या काळजीवाहकाला सांगेन.",
+    followUpSymptom: (name) => `${name} कधी सुरू झाला, आणि तो सौम्य आहे की गंभीर?`,
+    followUpGeneric: "हे कधी सुरू झाले, आणि ते सौम्य आहे की गंभीर?",
+    followUpDosage: "तुमच्या काळजीवाहकाला सांगण्यासारखे अजून काही आहे का?",
     dosageSafetyCheck:
       "संपवण्यापूर्वी, तुम्हाला आत्ता काही लक्षणे आहेत का, जसे चक्कर, मळमळ, किंवा श्वास घेण्यास त्रास?",
     alreadyEnded: "हा सिम्युलेटेड कॉल आधीच संपला आहे. धन्यवाद.",
     closingNoAction: (name) =>
       `माझ्याशी बोलल्याबद्दल धन्यवाद, ${name}. तुमची तपासणी नोंदवली आहे. काळजी घ्या. नमस्कार.`,
     closingWithAction: (name) =>
-      `माझ्याशी बोलल्याबद्दल धन्यवाद, ${name}. आम्ही तुमच्या चिंता नोंदवल्या आहेत आणि तुमच्या काळजीवाहकासाठी पाठपुरावा ठेवला आहे. काळजी घ्या. नमस्कार.`,
+      `माझ्याशी बोलल्याबद्दल धन्यवाद, ${name}. आम्ही तुमच्या चिंता नोंदवल्या आहेत आणि तुमच्या काळजीवाहकापर्यंत पोहोचवल्या आहेत. काळजी घ्या. नमस्कार.`,
     closingUnanswered: (name) =>
-      `माझ्याशी बोलल्याबद्दल धन्यवाद, ${name}. तुम्ही सांगितलेल्या चिंता आम्ही नोंदवल्या आहेत, आणि ज्यांची उत्तरे मिळाली नाहीत त्या तपशीलांसाठी तुमचे काळजीवाहक पुढे संपर्क साधतील. काळजी घ्या. नमस्कार.`,
+      `माझ्याशी बोलल्याबद्दल धन्यवाद, ${name}. तुम्ही सांगितलेल्या चिंता आम्ही नोंदवल्या आहेत, आणि तुमचे काळजीवाहक पुढे संपर्क साधतील. काळजी घ्या. नमस्कार.`,
     incomplete: "धन्यवाद. मी हे तुमच्या काळजीवाहकासाठी नोंदवले आहे.",
   },
 };

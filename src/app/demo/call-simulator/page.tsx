@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/ui/icon";
 import { Badge, SectionCard, StatusBadge } from "@/components/ui/kit";
-import { greeting, normalizeLanguage } from "@/modules/conversation/language";
+import { closingCopy, decisionCopy, greeting, normalizeLanguage } from "@/modules/conversation/language";
+import { playSpeechResponse, splitForSpeech } from "@/modules/audio/speech-playback";
 
 interface PatientOption {
   id: string;
@@ -51,12 +52,14 @@ interface ConversationStateDto {
   symptoms: string[];
   severeSymptoms: string[];
   addressedSymptoms: string[];
+  retractedSymptoms: string[];
   contradictions: string[];
   escalation: "none" | "case_opened" | "emergency";
   escalationDecision: string | null;
   openQuestions: string[];
   askedQuestions: string[];
   unansweredQuestions: string[];
+  followUpAttempts: Record<string, number>;
   turnCount: number;
   closed: boolean;
   endReason: string | null;
@@ -102,12 +105,20 @@ async function callApi(url: string, body?: unknown): Promise<ApiResult> {
 interface SpeechRecognitionLike {
   lang: string;
   interimResults: boolean;
-  onresult: ((event: { results: { [index: number]: { [index: number]: { transcript: string } } } }) => void) | null;
-  onerror: (() => void) | null;
+  continuous: boolean;
+  onresult:
+    | ((event: {
+        resultIndex: number;
+        results: { length: number; [index: number]: { isFinal: boolean; [index: number]: { transcript: string } } };
+      }) => void)
+    | null;
+  onerror: ((event: { error?: string }) => void) | null;
   onend: (() => void) | null;
   start: () => void;
   stop: () => void;
 }
+
+const FIXED_GREETINGS = new Set<string>(SUPPORTED_LANGUAGES.map((option) => greeting(normalizeLanguage(option.code))));
 type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
 
 const INTAKE_TEMPLATE = "Morning medication check-in · self-reported adherence";
@@ -137,6 +148,12 @@ export default function CallSimulatorPage() {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const ttsAbortRef = useRef<AbortController | null>(null);
+  const ttsCacheRef = useRef<Map<string, Blob>>(new Map());
+  const cacheableSpeechRef = useRef<Set<string>>(new Set(FIXED_GREETINGS));
+  const ttsInFlightRef = useRef<Map<string, Promise<Blob | null>>>(new Map());
+  const prefetchRunRef = useRef<Set<string>>(new Set());
+  const speechSeqRef = useRef(0);
   const logEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -177,34 +194,102 @@ export default function CallSimulatorPage() {
     setLog((prev) => [...prev, { role, text }]);
   }
 
-  async function speak(text: string) {
-    if (!autoSpeak || !text.trim()) return;
-    if (!speech?.configured) {
-      setVoiceNote("Real voice is not configured — text-only simulated call.");
-      return;
-    }
-    try {
+  function stopPlayback() {
+    speechSeqRef.current += 1;
+    ttsAbortRef.current?.abort();
+    ttsAbortRef.current = null;
+    audioRef.current?.pause();
+    audioRef.current = null;
+  }
+
+  function fetchTts(text: string, signal?: AbortSignal, lang: string = language): Promise<Blob | null> {
+    const cacheKey = `${lang}:${text}`;
+    const cached = ttsCacheRef.current.get(cacheKey);
+    if (cached) return Promise.resolve(cached);
+    const inFlight = ttsInFlightRef.current.get(cacheKey);
+    if (inFlight) return inFlight;
+    const request = (async () => {
       const res = await fetch("/api/v1/speech/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, language }),
+        body: JSON.stringify({ text, language: lang }),
+        signal,
       });
-      if (!res.ok) {
-        setVoiceNote("Voice playback unavailable — continuing with text.");
+      if (!res.ok) return null;
+      const blob = await res.blob();
+      if (cacheableSpeechRef.current.has(text)) ttsCacheRef.current.set(cacheKey, blob);
+      return blob;
+    })().finally(() => ttsInFlightRef.current.delete(cacheKey));
+    ttsInFlightRef.current.set(cacheKey, request);
+    return request;
+  }
+
+  function playAudioBlob(blob: Blob, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      let settled = false;
+
+      const cleanup = () => {
+        signal.removeEventListener("abort", onAbort);
+        audio.onended = null;
+        audio.onerror = null;
+        URL.revokeObjectURL(url);
+        if (audioRef.current === audio) audioRef.current = null;
+      };
+
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        audio.pause();
+        cleanup();
+        if (error) reject(error);
+        else resolve();
+      };
+
+      const onAbort = () => finish(new DOMException("Playback cancelled", "AbortError"));
+
+      if (signal.aborted) {
+        finish(new DOMException("Playback cancelled", "AbortError"));
         return;
       }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      audioRef.current?.pause();
-      const audio = new Audio(url);
-      audio.onended = () => URL.revokeObjectURL(url);
+
+      signal.addEventListener("abort", onAbort, { once: true });
+      audio.onended = () => finish();
+      audio.onerror = () => finish(new Error("Audio decoding failed."));
       audioRef.current = audio;
-      await audio.play();
-      setVoiceNote("VerbX voice playback (live provider).");
-    } catch {
-      setVoiceNote("Voice playback unavailable — continuing with text.");
+      audio.play().catch((error: Error) => finish(error));
+    });
+  }
+
+  async function speak(text: string, lang: string = language) {
+    if (!autoSpeak || !text.trim()) return;
+    if (!speech?.configured) {
+      setVoiceNote("Real voice is not configured - text-only simulated call.");
+      return;
+    }
+    const seq = speechSeqRef.current + 1;
+    speechSeqRef.current = seq;
+    ttsAbortRef.current?.abort();
+    const controller = new AbortController();
+    ttsAbortRef.current = controller;
+    audioRef.current?.pause();
+
+    const result = await playSpeechResponse({
+      text,
+      signal: controller.signal,
+      isCurrent: () => seq === speechSeqRef.current,
+      synthesize: (phrase, signal) => fetchTts(phrase, signal, lang),
+      play: playAudioBlob,
+      onError: (message) => setVoiceNote(message),
+    });
+
+    if (seq !== speechSeqRef.current) return;
+    if (result === "completed") {
+      setVoiceNote("VerbX voice playback complete (provider returns one audio file per phrase).");
     }
   }
+
 
   async function safe(fn: () => Promise<void>) {
     setBusy(true);
@@ -233,12 +318,13 @@ export default function CallSimulatorPage() {
       setDecisions([]);
       setConversationState(null);
       setReplySource(null);
-      const opening = greeting(normalizeLanguage(language));
+      const openingLanguage = normalizeLanguage(language);
+      const opening = greeting(openingLanguage);
       setLog([
-        { role: "system", text: "SIMULATED CALL STARTED — no real phone call is placed." },
+        { role: "system", text: "SIMULATED CALL STARTED - no real phone call is placed." },
         { role: "ai", text: opening },
       ]);
-      void speak(opening);
+      void speak(opening, openingLanguage);
     });
   }
 
@@ -246,6 +332,7 @@ export default function CallSimulatorPage() {
     if (!checkInId) return;
     const text = (forcedText ?? transcript).trim();
     if (!text) return;
+    stopPlayback();
     await safe(async () => {
       addLog("patient", text);
       const result = await callApi(`/api/v1/check-ins/${checkInId}/submit-input`, {
@@ -260,6 +347,8 @@ export default function CallSimulatorPage() {
         status?: string;
         replyText?: string;
         followUpQuestion?: string | null;
+        spokenText?: string;
+        language?: string;
         closing?: boolean;
         conversation?: { state: ConversationStateDto; replySource: "llm" | "scripted" };
       };
@@ -270,10 +359,14 @@ export default function CallSimulatorPage() {
       const nextStatus = data.checkIn?.status ?? data.status ?? null;
       setStatus(nextStatus);
 
+      const replyLanguage = data.language ?? language;
+      const spoken =
+        data.spokenText ?? [data.replyText, data.followUpQuestion].filter(Boolean).join(" ");
+
       if (data.closing) {
         if (data.replyText) {
           addLog("ai", data.replyText);
-          void speak(data.replyText);
+          void speak(spoken, replyLanguage);
         }
         addLog("system", "Call complete - transcript saved. No real call was placed.");
         setPhase("ended");
@@ -282,10 +375,10 @@ export default function CallSimulatorPage() {
 
       const decision = data.decision?.type ?? "unknown";
       setDecisions((prev) => [...prev, { type: decision, status: nextStatus ?? "unknown" }]);
-      addLog("decision", `Rule decision: ${decision.replaceAll("_", " ")} · status ${nextStatus ?? "?"}`);
+      addLog("decision", `Rule decision: ${decision.replaceAll("_", " ")} - status ${nextStatus ?? "?"}`);
       if (data.replyText) addLog("ai", data.replyText);
       if (data.followUpQuestion) addLog("ai", data.followUpQuestion);
-      void speak([data.replyText, data.followUpQuestion].filter(Boolean).join(" "));
+      void speak(spoken, replyLanguage);
       if (data.followUpQuestion) {
         setPhase("awaiting_followup");
       } else {
@@ -344,90 +437,254 @@ export default function CallSimulatorPage() {
     setListening(false);
   }
 
+  function submitSpoken(text: string) {
+    const spoken = text.trim();
+    if (!spoken) {
+      setError("No speech was detected. Try again or type the answer.");
+      return;
+    }
+    setTranscript("");
+    void submitAnswer("speech", spoken);
+  }
+
+  async function startVerbxRecorder(reason: "fallback" | "manual") {
+    if (!speech?.configured) return;
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setError("This browser cannot record audio. Type the answer instead.");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      chunksRef.current = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunksRef.current.push(event.data);
+      };
+
+      // Energy VAD: auto-stop after ~800 ms of silence once speech starts.
+      const context = new AudioContext();
+      void context.resume();
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 1024;
+      context.createMediaStreamSource(stream).connect(analyser);
+      const samples = new Float32Array(analyser.fftSize);
+      let heardSpeech = false;
+      let silenceSince = 0;
+      const startedAt = performance.now();
+      let raf = 0;
+      const watchSilence = () => {
+        analyser.getFloatTimeDomainData(samples);
+        let energy = 0;
+        for (const sample of samples) energy += sample * sample;
+        const rms = Math.sqrt(energy / samples.length);
+        const now = performance.now();
+        if (rms > 0.02) {
+          heardSpeech = true;
+          silenceSince = 0;
+        } else if (heardSpeech) {
+          if (!silenceSince) silenceSince = now;
+          if (now - silenceSince > 800 && recorder.state === "recording") recorder.stop();
+        } else if (now - startedAt > 8000 && recorder.state === "recording") {
+          recorder.stop();
+        }
+        raf = requestAnimationFrame(watchSilence);
+      };
+      raf = requestAnimationFrame(watchSilence);
+
+      recorder.onstop = () => {
+        cancelAnimationFrame(raf);
+        void context.close();
+        setListening(false);
+        stream.getTracks().forEach((track) => track.stop());
+        void (async () => {
+          const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
+          const bytes = new Uint8Array(await blob.arrayBuffer());
+          let binary = "";
+          for (let i = 0; i < bytes.length; i += 0x8000) {
+            binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+          }
+          setBusy(true);
+          setError(null);
+          try {
+            const res = await fetch("/api/v1/speech/stt", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ audioBase64: btoa(binary), language }),
+            });
+            const payload = (await res.json().catch(() => ({}))) as {
+              data?: { text?: string };
+              error?: { message?: string };
+            };
+            if (!res.ok) throw new Error(payload.error?.message ?? "Transcription failed.");
+            const text = payload.data?.text?.trim();
+            if (!text) throw new Error("No speech was detected. Try again or type the answer.");
+            setVoiceNote("VerbX STT (live provider).");
+            submitSpoken(text);
+          } catch (err) {
+            setError(err instanceof Error ? err.message : "Transcription failed.");
+          } finally {
+            setBusy(false);
+          }
+        })();
+      };
+      recorder.start();
+      recorderRef.current = recorder;
+      setListening(true);
+      setVoiceNote(
+        reason === "fallback"
+          ? "Browser recognition unavailable — recording for VerbX STT instead…"
+          : "Recording for VerbX STT (live provider; stops after silence)…",
+      );
+    } catch {
+      setError("Microphone permission is required, or type the answer instead.");
+    }
+  }
+
+  function startBrowserRecognition(): boolean {
+    const w = window as unknown as {
+      SpeechRecognition?: SpeechRecognitionCtor;
+      webkitSpeechRecognition?: SpeechRecognitionCtor;
+    };
+    const SpeechAPI = w.SpeechRecognition ?? w.webkitSpeechRecognition;
+    if (!SpeechAPI) return false;
+
+    const recognition = new SpeechAPI();
+    recognition.lang = BROWSER_LANGUAGE[language] ?? "en-US";
+    recognition.interimResults = true;
+    recognition.continuous = true;
+    let finalText = "";
+    let interimText = "";
+    let finished = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      if (timer) clearTimeout(timer);
+      try {
+        recognition.stop();
+      } catch {
+        // already stopped
+      }
+      setListening(false);
+      const text = `${finalText} ${interimText}`.trim();
+      if (text) submitSpoken(text);
+      else setError("No speech was detected. Try again or type the answer.");
+    };
+
+    const armSilenceTimer = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(finish, 700);
+    };
+
+    recognition.onresult = (event) => {
+      interimText = "";
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        const text = result?.[0]?.transcript ?? "";
+        if (result?.isFinal) finalText += ` ${text}`;
+        else interimText += ` ${text}`;
+      }
+      const display = `${finalText} ${interimText}`.trim();
+      setTranscript(display);
+      if (display) armSilenceTimer();
+    };
+    recognition.onerror = (event) => {
+      if (finished) return;
+      finished = true;
+      if (timer) clearTimeout(timer);
+      setListening(false);
+      const code = event.error ?? "unknown";
+      if (speech?.configured && ["network", "service-not-allowed", "audio-capture"].includes(code)) {
+        void startVerbxRecorder("fallback");
+        return;
+      }
+      setError(
+        code === "not-allowed"
+          ? "Microphone permission is required, or type the answer instead."
+          : "Speech recognition failed. Try again or type the answer.",
+      );
+    };
+    recognition.onend = () => {
+      if (!finished) finish();
+    };
+
+    recognitionRef.current = recognition;
+    try {
+      recognition.start();
+    } catch {
+      if (timer) clearTimeout(timer);
+      recognitionRef.current = null;
+      return false;
+    }
+    setListening(true);
+    setVoiceNote("Browser speech recognition (streaming, auto-stops after silence).");
+    return true;
+  }
+
+  function completedFallback() {
+    if (speech?.configured) {
+      void startVerbxRecorder("fallback");
+    } else {
+      setError("Speech recognition is not supported in this browser. Type the answer instead.");
+    }
+  }
+
   async function toggleMic() {
     if (listening) {
       stopMic();
       return;
     }
-    if (speech?.configured) {
-      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
-        setError("This browser cannot record audio. Type the answer instead.");
-        return;
-      }
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const recorder = new MediaRecorder(stream);
-        chunksRef.current = [];
-        recorder.ondataavailable = (event) => {
-          if (event.data.size > 0) chunksRef.current.push(event.data);
-        };
-        recorder.onstop = () => {
-          setListening(false);
-          stream.getTracks().forEach((track) => track.stop());
-          void (async () => {
-            const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
-            const bytes = new Uint8Array(await blob.arrayBuffer());
-            let binary = "";
-            for (let i = 0; i < bytes.length; i += 0x8000) {
-              binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-            }
-            setBusy(true);
-            setError(null);
-            try {
-              const res = await fetch("/api/v1/speech/stt", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ audioBase64: btoa(binary), language }),
-              });
-              const payload = (await res.json().catch(() => ({}))) as {
-                data?: { text?: string };
-                error?: { message?: string };
-              };
-              if (!res.ok) throw new Error(payload.error?.message ?? "Transcription failed.");
-              const text = payload.data?.text?.trim();
-              if (!text) throw new Error("No speech was detected. Try again or type the answer.");
-              setTranscript("");
-              setVoiceNote("VerbX STT (live provider).");
-              await submitAnswer("speech", text);
-            } catch (err) {
-              setError(err instanceof Error ? err.message : "Transcription failed.");
-            } finally {
-              setBusy(false);
-            }
-          })();
-        };
-        recorder.start();
-        recorderRef.current = recorder;
-        setListening(true);
-        setVoiceNote("Recording for VerbX STT (live provider)…");
-      } catch {
-        setError("Microphone permission is required, or type the answer instead.");
-      }
-      return;
-    }
-
-    const w = window as unknown as { SpeechRecognition?: SpeechRecognitionCtor; webkitSpeechRecognition?: SpeechRecognitionCtor };
-    const SpeechAPI = w.SpeechRecognition ?? w.webkitSpeechRecognition;
-    if (!SpeechAPI) {
-      setError("Speech recognition is not supported in this browser. Type the answer instead.");
-      return;
-    }
-    const recognition = new SpeechAPI();
-    recognition.lang = BROWSER_LANGUAGE[language] ?? "en-US";
-    recognition.interimResults = false;
-    recognition.onresult = (event) => {
-      const text = event.results[0]?.[0]?.transcript ?? "";
-      setTranscript(text);
-    };
-    recognition.onerror = () => setListening(false);
-    recognition.onend = () => setListening(false);
-    recognitionRef.current = recognition;
-    recognition.start();
-    setListening(true);
-    setVoiceNote("Browser speech recognition (simulated demo; no server call).");
+    stopPlayback();
+    if (startBrowserRecognition()) return;
+    completedFallback();
   }
 
   const activePatient = patients.find((p) => p.id === patientId);
+
+  useEffect(() => {
+    if (!speech?.configured || !autoSpeak || !activePatient || phase !== "awaiting_answer") return;
+    const lang = normalizeLanguage(language);
+    const firstName = activePatient.display_name.trim().split(/\s+/)[0] ?? "";
+    if (!firstName) return;
+    const noAction = closingCopy(lang, {
+      firstName,
+      actionTaken: false,
+      unanswered: false,
+      emergency: false,
+    });
+    const candidates = [
+      `${decisionCopy("log_adherence", lang)} ${noAction}`,
+      decisionCopy("emergency_guidance", lang),
+      ...(lang === "en" ? [decisionCopy("symptom_escalation", lang), decisionCopy("dosage_safety_response", lang)] : []),
+    ];
+    const runKey = `${lang}:${firstName}`;
+    if (prefetchRunRef.current.has(runKey)) return;
+    prefetchRunRef.current.add(runKey);
+    const pending = [...new Set(candidates)]
+      .map((raw) => splitForSpeech(raw)[0])
+      .filter((text): text is string => Boolean(text))
+      .map((text) => ({ text, cacheKey: `${lang}:${text}` }))
+      .filter(({ cacheKey }) => !ttsCacheRef.current.has(cacheKey));
+    void (async () => {
+      for (const { text, cacheKey } of pending) {
+        try {
+          const res = await fetch("/api/v1/speech/tts", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text, language: lang }),
+          });
+          if (!res.ok) continue;
+          const blob = await res.blob();
+          cacheableSpeechRef.current.add(text);
+          ttsCacheRef.current.set(cacheKey, blob);
+        } catch {
+          // Prefetch is best effort; the live request still runs on submit.
+        }
+      }
+    })();
+  }, [speech?.configured, autoSpeak, language, activePatient, phase]);
+
   const canAnswer = phase === "awaiting_answer" || phase === "awaiting_followup";
   const quickReplies =
     phase === "awaiting_followup"
@@ -451,7 +708,8 @@ export default function CallSimulatorPage() {
           <h1 className="font-display text-[26px] leading-tight font-bold">Call simulator</h1>
           <p className="mt-1 max-w-2xl text-[12px] text-ink-soft">
             Rehearse medication check-ins, multi-turn safety decisions, and simulated caregiver escalation. Speech
-            recognition stays in your browser; typing always works.
+            recognition uses your browser when available; if it fails, a short recording is sent for transcription. Typing
+            always works.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
@@ -524,7 +782,7 @@ export default function CallSimulatorPage() {
             <span className="flex flex-wrap items-center gap-1 text-[9px] text-ink-muted">
               <Badge tone="white">consent on file</Badge>
               <Badge tone={speech?.configured ? "sage" : "white"}>
-                {speech?.configured ? "VerbX STT/TTS live" : "speech simulated"}
+                {speech?.configured ? "Browser STT · VerbX TTS" : "speech simulated"}
               </Badge>
             </span>
           ) : null}
@@ -634,7 +892,7 @@ export default function CallSimulatorPage() {
               className={`neo-btn h-8 text-[10px] ${listening ? "neo-btn-rose" : ""}`}
             >
               <Icon name="mic" size={12} />
-              {listening ? "Stop mic" : speech?.configured ? "VerbX microphone" : "Use microphone"}
+              {listening ? "Stop mic" : "Use microphone"}
             </button>
             <label className="flex items-center gap-1 text-[9px] font-semibold text-ink-soft">
               <input
@@ -696,8 +954,20 @@ export default function CallSimulatorPage() {
                 <StateRow label="Symptoms" value={listOrNone(conversationState.symptoms)} />
                 <StateRow label="Severe" value={listOrNone(conversationState.severeSymptoms)} />
                 <StateRow label="Addressed" value={listOrNone(conversationState.addressedSymptoms)} />
+                <StateRow label="Retracted" value={listOrNone(conversationState.retractedSymptoms ?? [])} />
                 <StateRow label="Open questions" value={listOrNone(conversationState.openQuestions.map(questionLabel))} />
                 <StateRow label="Unanswered" value={listOrNone(conversationState.unansweredQuestions)} />
+                <StateRow
+                  label="Follow-up attempts"
+                  value={
+                    Object.entries(conversationState.followUpAttempts ?? {})
+                      .map(
+                        ([question, count]) =>
+                          `${question.replace("symptom_details:", "").replaceAll("_", " ")} x${count}`,
+                      )
+                      .join(", ") || "none"
+                  }
+                />
                 <StateRow label="Contradictions" value={listOrNone(conversationState.contradictions)} />
                 <StateRow label="Escalation" value={conversationState.escalation.replaceAll("_", " ")} />
                 <StateRow

@@ -4,7 +4,7 @@ import {
   replyMatchesLanguage,
   type ConversationAnalysis,
 } from "@/modules/conversation/analysis";
-import type { ConversationState, ReplySource } from "@/modules/conversation/state";
+import { isClosingIntent, type ConversationState, type ReplySource } from "@/modules/conversation/state";
 import type { ExtractedSignals } from "@/modules/rules-engine/extract";
 import type { AdherenceStatus, DecisionType } from "@/modules/rules-engine/types";
 import {
@@ -23,9 +23,8 @@ const ACTION_DECISIONS = new Set([
   "unreachable_escalation",
 ]);
 
-const SAFETY_DECISIONS = new Set([
-  "symptom_escalation",
-  "dosage_safety_response",
+/** These decisions keep the exact scripted safety wording; no model phrasing. */
+const SCRIPTED_ONLY_DECISIONS = new Set([
   "emergency_guidance",
   "unreachable_escalation",
   "unresolved",
@@ -90,6 +89,24 @@ export async function analyzeTurn(input: AnalyzeTurnInput): Promise<AnalyzedTurn
     return { analysis: fallback, source: "deterministic" };
   }
 
+  // One compact call per turn only when wording or multi-fact parsing helps.
+  // Emergency copy is scripted and immediate; routine "yes I took it" and call
+  // close-out add no facts, so they skip the provider and save tokens/latency.
+  const needsLanguageModel =
+    !input.signals.emergency &&
+    !isClosingIntent(input.transcript, input.signals) &&
+    (input.signals.symptoms.length > 0 ||
+      input.signals.dosageQuestion ||
+      input.signals.adherenceStatus === "unknown");
+  if (!needsLanguageModel) return { analysis: fallback, source: "deterministic" };
+
+  const predictedDecision = input.signals.dosageQuestion
+    ? "dosage_safety_response"
+    : input.signals.symptoms.length > 0
+      ? "symptom_escalation"
+      : "clarification_required";
+  const actionTaken = actionTakenFor(predictedDecision);
+
   const analysis = await requestTurnAnalysis({
     patientFirstName: input.firstName,
     language: input.language,
@@ -121,16 +138,16 @@ export async function analyzeTurn(input: AnalyzeTurnInput): Promise<AnalyzedTurn
     replyMatchesLanguage(reply, input.language) &&
     checkAgentText({
       text: reply,
-      decisionType: "clarification_required",
-      actionTaken: false,
+      decisionType: predictedDecision,
+      actionTaken,
     }).ok;
   const question =
     analysis.followUpQuestion &&
     replyMatchesLanguage(analysis.followUpQuestion, input.language) &&
     checkAgentText({
       text: analysis.followUpQuestion,
-      decisionType: "clarification_required",
-      actionTaken: false,
+      decisionType: predictedDecision,
+      actionTaken,
       allowQuestion: true,
     }).ok
       ? analysis.followUpQuestion
@@ -212,7 +229,7 @@ export function buildAgentTurn(input: AgentTurnInput): AgentTurn {
   if (
     input.analysis.replyText &&
     input.analysisSource === "llm" &&
-    !SAFETY_DECISIONS.has(input.decisionType) &&
+    !SCRIPTED_ONLY_DECISIONS.has(input.decisionType) &&
     replyMatchesLanguage(input.analysis.replyText, input.language)
   ) {
     base = input.analysis.replyText;

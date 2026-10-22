@@ -97,6 +97,15 @@ describe("extractSignals", () => {
     expect(s.adherenceStatus).toBe("reported_taken");
   });
 
+  it("extracts every fact from one multi-signal sentence", () => {
+    const s = extractSignals(
+      "I took the pills but I feel like having a fever. Should I take another pill?",
+    );
+    expect(s.adherenceStatus).toBe("reported_taken");
+    expect(s.symptoms).toContain("possible_fever");
+    expect(s.dosageQuestion).toBe(true);
+  });
+
   it("empty input needs clarification", () => {
     expect(extractSignals("   ").needsClarification).toBe(true);
   });
