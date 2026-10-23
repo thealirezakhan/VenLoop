@@ -94,7 +94,7 @@ Phases per PRD 19. Do not mark a phase done until its acceptance criteria pass.
 - [x] Escalation actions use a purpose-scoped idempotency key and cases are deduplicated by check-in + category.
 - [x] Deterministic question/reply flow is unchanged; scripted emergency wording always wins over generic follow-up wording.
 - [x] Optional VerbX adapter (`src/lib/server/speech.ts`, routes `/api/v1/speech/{status,stt,tts}`): STT, TTS, and translation stay server-side with timeouts, input caps, and rate limits. Missing key returns `SPEECH_NOT_CONFIGURED`; the simulator stays text-only and labels speech simulated.
-- [x] Simulator: call-language selector (English/Hindi/Marathi), browser streaming speech recognition by default with 700 ms silence auto-submit, VerbX batch STT fallback, optional spoken replies, active-concern rail, and TC6 one-turn reassessment demo.
+- [x] Simulator: call-language selector (English/Hindi/Marathi), VerbX batch STT primary when configured, browser speech recognition fallback, 2.5 s silence auto-submit, live-call and turn-based modes, optional spoken replies, active-concern rail, and TC6 one-turn reassessment demo.
 - [x] Non-English input is translated to English only when VerbX is configured; otherwise it degrades to clarification (never a guessed adherence conclusion or missed emergency).
 - [x] Groq cost guards: per-process concurrency cap (4), 8-second timeout, 1024-token cap with strict JSON schema, deterministic replies for routine/duplicate/long turns, recent-turn-only context.
 - [x] Regression tests: `trouble breathing` + dosage extraction, cumulative non-downgrade/upgrade unit tests, DB pipeline symptom→emergency upgrade with two cases and two actions, TC6 e2e.

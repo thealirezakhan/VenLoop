@@ -200,7 +200,7 @@ The simulator also includes **TC6**, a one-turn reassessment demo combining dizz
 
 - **Caregiver dashboard**: assigned patients, check-ins, open cases, priority watchlist, schedule.
 - **Patient detail**: medications, care plan, calendar, care logs, contacts, care notes.
-- **Call simulator**: English / Hindi / Marathi selector, scenario chips, browser streaming speech with silence auto-submit, optional VerbX voice, persistent simulated labeling.
+- **Call simulator**: Live Call and Turn-Based Demo modes, English / Hindi / Marathi selector, scenario chips, 2.5 s silence auto-submit, optional VerbX voice, persistent simulated labeling.
 - **Cumulative conversation state**: symptoms, severity, addressed/unanswered questions, contradictions, escalation, facts with source turn IDs.
 - **Escalation cases**: acknowledge → category action → resolve with note.
 - **Evidence console**: rule trace, original transcript, extracted signals, delivery attempts, expected-vs-observed verification, JSON export.
@@ -211,7 +211,7 @@ The simulator also includes **TC6**, a one-turn reassessment demo combining dizz
 
 - Scripted copy exists for English, Hindi, and Marathi.
 - With VerbX configured, typed non-English input can be translated for extraction, and replies can be spoken.
-- Browser streaming speech is the primary microphone path; VerbX batch STT is the fallback when the browser API is unavailable.
+- VerbX batch STT is the primary microphone path when configured; browser streaming speech is the fallback. Turns finalize after 2.5 s of silence, and Turn-Based Demo submits manually.
 - VerbX TTS and translation were verified live. VerbX STT was unavailable upstream during verification (`provider_outage`), so live STT is **not verified**.
 
 ## Tech stack
@@ -312,7 +312,7 @@ Requires Node 22+ and a hosted Supabase project.
 - Not clinically validated. Do not use with real patients.
 - Real telephony and notifications are intentionally not enabled.
 - Deployment target and smoke tests are not configured yet.
-- VerbX STT was unavailable upstream during verification; browser streaming speech is primary and VerbX batch STT is the fallback.
+- VerbX STT was unavailable upstream during verification; browser streaming speech remains the fallback and the typed path still works.
 - Rate limiting and LLM concurrency caps are per-process, not distributed.
 - Official failure-injection coverage is partial: provider timeout and DB-down scenarios are not injected.
 - TC6 is a simulator demo, not an official PRD test case.

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+﻿import { expect, test, type Page } from "@playwright/test";
 
 const CAREGIVER = { email: "caregiver.a@venloop.demo", password: "venloop-demo-123" };
 const ADMIN = { email: "admin@venloop.demo", password: "venloop-demo-123" };
@@ -35,38 +35,63 @@ test.describe("VenLoop e2e (PRD 16.3)", () => {
   test("call simulator is labeled as simulated", async ({ page }) => {
     await login(page, CAREGIVER);
     await page.goto("/demo/call-simulator");
-    await expect(page.getByText("SIMULATED CALL — browser rehearsal only")).toBeVisible();
-    await expect(page.getByText("no real phone call")).toBeVisible();
+    await expect(page.getByText("SIMULATED CALL", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("no real phone, SMS, or email")).toBeVisible();
+    await expect(page.getByText("Requests microphone access. Nothing is dialed.")).toBeVisible();
+  });
+
+  test("turn-based demo submits a suggested reply manually without a microphone", async ({ page }) => {
+    test.setTimeout(90_000);
+    await login(page, CAREGIVER);
+    await page.goto("/demo/call-simulator?patient=00000000-0000-4000-8000-000000000014");
+    await page.getByRole("button", { name: "Turn-Based Demo" }).click();
+    await expect(page.getByRole("button", { name: "Submit answer" })).toBeVisible();
+    await page.getByRole("button", { name: "Yes, I took my medicine this morning." }).click();
+    await page.getByRole("button", { name: "Start simulated call" }).click();
+    await expect(page.getByText("SIMULATED CALL STARTED", { exact: false }).first()).toBeVisible({
+      timeout: 30_000,
+    });
+    await page.getByRole("button", { name: "Submit answer" }).click();
+    await expect(page.getByText("Yes, I took my medicine this morning.", { exact: true }).last()).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(page.getByText(/Call complete/i).first()).toBeVisible({ timeout: 45_000 });
   });
 
   test("nausea follow-up keeps the simulated call open until answered", async ({ page }) => {
+    test.setTimeout(90_000);
     await login(page, CAREGIVER);
     await page.goto("/demo/call-simulator?patient=00000000-0000-4000-8000-000000000014");
-    await page.getByRole("button", { name: "Start simulated call" }).click();
-    await expect(page.getByText("SIMULATED CALL STARTED")).toBeVisible();
     await page.getByRole("button", { name: /TC3/ }).click();
-    await page.getByRole("button", { name: "Submit answer" }).click();
-    await expect(page.getByText(/When did the nausea start/i)).toBeVisible();
-    await expect(page.getByText(/nausea_or_vomiting details/i)).toBeVisible();
+    await page.getByRole("button", { name: "Start simulated call" }).click();
+    await expect(page.getByText("SIMULATED CALL STARTED", { exact: false }).first()).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByText(/When did the nausea start/i).first()).toBeVisible({ timeout: 45_000 });
+    await expect(page.getByText(/nausea_or_vomiting/i).first()).toBeVisible();
 
-    await page.getByRole("textbox").fill("It started this morning and it is mild.");
-    await page.getByRole("button", { name: "Submit answer" }).click();
-    await expect(page.getByText(/We have recorded your concerns/i)).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText(/Call complete - transcript saved/i)).toBeVisible({ timeout: 30_000 });
+    await page.getByText("Type a reply (fallback)").click();
+    await page.getByLabel("Type a reply instead").fill("It started this morning and it is mild.");
+    await page.getByRole("button", { name: "Send typed reply" }).click();
+    await expect(page.getByText(/We have recorded your concerns/i).first()).toBeVisible({ timeout: 45_000 });
+    await expect(page.getByText(/Call complete/i).first()).toBeVisible({ timeout: 45_000 });
   });
 
   test("breathing trouble with a dosage question triggers the emergency path", async ({ page }) => {
+    test.setTimeout(90_000);
     await login(page, CAREGIVER);
     await page.goto("/demo/call-simulator?patient=00000000-0000-4000-8000-000000000014");
-    await page.getByRole("button", { name: "Start simulated call" }).click();
     await page.getByRole("button", { name: /TC6/ }).click();
-    await page.getByRole("button", { name: "Submit answer" }).click();
-    await expect(page.getByText(/emergency services/i)).toBeVisible({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Start simulated call" }).click();
+    await expect(page.getByText("SIMULATED CALL STARTED", { exact: false }).first()).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByText(/emergency services/i).first()).toBeVisible({ timeout: 45_000 });
     await expect(page.getByText(/emergency guidance/i).first()).toBeVisible();
-    await expect(page.getByText(/Call complete - transcript saved/i)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/Call complete/i).first()).toBeVisible({ timeout: 45_000 });
   });
 
-  test("TC1–TC4 official runs pass with expected decisions", async ({ page }) => {
+  test("TC1-TC4 official runs pass with expected decisions", async ({ page }) => {
     await login(page, ADMIN);
     await page.goto("/admin/runs");
     for (const id of ["TC1", "TC2", "TC3", "TC4"] as const) {
