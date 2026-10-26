@@ -6,6 +6,7 @@ import {
   type ConversationState,
 } from "@/modules/conversation/state";
 import type { ConversationAnalysis } from "@/modules/conversation/analysis";
+import { interpretTranscript } from "@/modules/conversation/transcript-interpretation";
 
 function turn(
   state: ConversationState,
@@ -157,10 +158,45 @@ describe("conversation state (multi-turn safety gate)", () => {
     expect(turnTwo.state.contradictions.join(" ")).toMatch(/changed/i);
   });
 
-  it("closes routine adherence immediately", () => {
-    const result = turn(emptyConversationState(), "Yes, I took my pill.", "log_adherence", false);
-    expect(result.closing).toBe(true);
-    expect(result.state.endReason).toBe("completed");
+  it("asks one closing check after routine adherence, then closes", () => {
+    const turnOne = turn(emptyConversationState(), "Yes, I took my pill.", "log_adherence", false);
+    expect(turnOne.closing).toBe(false);
+    expect(turnOne.followUpQuestion).toMatch(/anything else/i);
+    expect(turnOne.state.askedQuestions).toContain("closing_check");
+
+    const turnTwo = turn(turnOne.state, "No, that's all.", "log_adherence", false);
+    expect(turnTwo.closing).toBe(true);
+    expect(turnTwo.state.endReason).toBe("completed");
+  });
+
+  it("re-asks the pending question when the patient repeats themselves", () => {
+    const turnOne = turn(emptyConversationState(), "I feel a bit nauseous today.", "symptom_escalation", true);
+    const turnTwo = turn(
+      turnOne.state,
+      "I already told you, I feel nauseous.",
+      "symptom_escalation",
+      true,
+    );
+    expect(turnTwo.closing).toBe(false);
+    expect(turnTwo.followUpQuestion).toMatch(/when did the nausea start/i);
+  });
+
+  it("stops at the hard turn ceiling with an unresolved outcome", () => {
+    let state = emptyConversationState();
+    for (let index = 0; index < 3; index += 1) {
+      const result = turn(
+        state,
+        index === 0 ? "I feel a bit nauseous today." : "I don't know.",
+        "symptom_escalation",
+        true,
+        { maxTurns: 2 },
+      );
+      state = result.state;
+      if (result.closing) break;
+    }
+    expect(state.closed).toBe(true);
+    expect(state.endReason).toBe("unresolved");
+    expect(state.turnCount).toBe(3);
   });
 
   it("keeps a dosage-only call open for one safety check", () => {
@@ -309,5 +345,23 @@ describe("conversation state (multi-turn safety gate)", () => {
     expect(turnTwo.state.escalationDecision).toBe("emergency_guidance");
     expect(turnTwo.state.escalation).toBe("emergency");
     expect(turnTwo.closing).toBe(true);
+  });
+
+  it("does not let an LLM report override locked uncertain adherence", () => {
+    const transcript = "I think I might have taken it.";
+    const interpretation = interpretTranscript({
+      rawTranscript: transcript,
+      normalizedTranscript: transcript,
+      language: "en",
+    });
+    const result = advanceConversation(emptyConversationState(), {
+      transcript,
+      signals: interpretation.interpretedSignals,
+      decision: "clarification_required",
+      escalated: false,
+      analysis: analysis({ adherenceStatus: "reported_taken" }),
+      analysisSource: "llm",
+    });
+    expect(result.state.medicationStatus).toBe("unknown");
   });
 });

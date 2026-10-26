@@ -84,6 +84,52 @@ describe.skipIf(!dbConfigured)("multi-turn conversation pipeline", () => {
     expect(cases?.[0]?.category).toBe("symptom");
   });
 
+  it("keeps a routine call open for the closing check, then completes", async () => {
+    const checkIn = await createCheckIn(adminActor, {
+      patientId: await patientId("Eleanor Davis"),
+      channel: "manual_test",
+    });
+    await startCheckIn(adminActor, checkIn.id);
+
+    const first = await submitInput(adminActor, checkIn.id, {
+      transcript: "Yes, I took my morning tablets.",
+      inputSource: "synthetic_fixture",
+    });
+    expect(first.decision.type).toBe("log_adherence");
+    expect(first.closing).toBe(false);
+    expect(first.checkIn.status).toBe("in_progress");
+    expect(first.followUpQuestion).toMatch(/anything else/i);
+
+    const second = await submitInput(adminActor, checkIn.id, {
+      transcript: "No, that's all.",
+      inputSource: "synthetic_fixture",
+    });
+    expect(second.closing).toBe(true);
+    expect(second.checkIn.status).toBe("completed");
+  });
+
+  it("marks an in-progress call escalated when a later turn reports a symptom", async () => {
+    const checkIn = await createCheckIn(adminActor, {
+      patientId: await patientId("Eleanor Davis"),
+      channel: "manual_test",
+    });
+    await startCheckIn(adminActor, checkIn.id);
+
+    const first = await submitInput(adminActor, checkIn.id, {
+      transcript: "Yes, I took my morning tablets.",
+      inputSource: "synthetic_fixture",
+    });
+    expect(first.decision.type).toBe("log_adherence");
+
+    const second = await submitInput(adminActor, checkIn.id, {
+      transcript: "Actually I feel nauseous now.",
+      inputSource: "synthetic_fixture",
+    });
+    expect(second.decision.type).toBe("symptom_escalation");
+    expect(second.checkIn.status).toBe("escalated");
+    expect(second.conversation?.state.escalation).toBe("case_opened");
+  });
+
   it("keeps dosage and symptom concerns separate and merges fever from a later turn", async () => {
     const checkIn = await createCheckIn(adminActor, {
       patientId: await patientId("Eleanor Davis"),

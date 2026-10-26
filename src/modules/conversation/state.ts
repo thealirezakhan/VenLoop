@@ -2,7 +2,12 @@ import { z } from "zod";
 import type { AdherenceStatus, DecisionType } from "@/modules/rules-engine/types";
 import type { ExtractedSignals } from "@/modules/rules-engine/extract";
 import type { ConversationAnalysis, AnalysisSymptom } from "./analysis";
-import { dosageSafetyCheck, symptomFollowUp, type SupportedLanguage } from "./language";
+import {
+  closingCheck,
+  dosageSafetyCheck,
+  symptomFollowUp,
+  type SupportedLanguage,
+} from "./language";
 import {
   canonicalSymptomCode,
   isSevereSymptomReport,
@@ -157,6 +162,8 @@ export interface AdvanceInput {
   analysisSource?: "llm" | "deterministic" | null;
   sourceTurnId?: string | null;
   language?: SupportedLanguage;
+  /** Hard ceiling so a confused loop can never run forever. */
+  maxTurns?: number;
 }
 
 export interface AdvanceResult {
@@ -168,11 +175,15 @@ export interface AdvanceResult {
 const CLOSING_INTENT =
   /\b(nothing else|nothing more|that'?s all|that is all|i'?m fine|i am fine|all good|no thanks|no thank you|no more questions|don'?t want to answer|do not want to answer|rather not|let'?s finish|end the call)\b/i;
 const BARE_CLOSING = /^\s*(no|nope|thanks|thank you)[.!]?\s*$/i;
+const REPEAT_PATTERN =
+  /\b(i (already )?(told|said)|like i said|as i said|i repeat|say (that|it) again|what did you ask|repeat (that|the question))\b/i;
 const DENIAL_PATTERN = /\b(no|not|never|without|don'?t|do not)\b/i;
 const DETAIL_PATTERN =
   /\b(mild|moderate|severe|started|this morning|today|yesterday|last night|no vomiting|not vomiting|stopped)\b/i;
 
-export const MAX_SYMPTOM_FOLLOW_UPS = 2;
+export const MAX_SYMPTOM_FOLLOW_UPS = 3;
+export const MAX_CONVERSATION_TURNS = 12;
+export const CLOSING_CHECK_KEY = "closing_check";
 
 export function isSevereReport(transcript: string, signals: ExtractedSignals): boolean {
   if (signals.emergency) return true;
@@ -189,11 +200,16 @@ export function isClosingIntent(
   return CLOSING_INTENT.test(transcript);
 }
 
+export function isRepeatRequest(transcript: string): boolean {
+  return REPEAT_PATTERN.test(transcript);
+}
+
 export function questionText(question: string, language: SupportedLanguage = "en"): string {
   if (question.startsWith("symptom_details:")) {
     return symptomFollowUp(question.slice("symptom_details:".length), language);
   }
   if (question === "dosage_safety_check") return dosageSafetyCheck(language);
+  if (question === CLOSING_CHECK_KEY) return closingCheck(language);
   return question;
 }
 
@@ -203,6 +219,21 @@ export function nextOpenQuestion(
 ): string | null {
   const question = state.openQuestions[0];
   return question ? questionText(question, language) : null;
+}
+
+function nextPendingQuestion(
+  state: ConversationState,
+  language: SupportedLanguage,
+): string | null {
+  const symptom = state.openQuestions.find((q) => q.startsWith("symptom_details:"));
+  if (symptom) return questionText(symptom, language);
+  if (
+    state.medicationQuestions.length > 0 &&
+    !state.askedQuestions.includes("dosage_safety_check")
+  ) {
+    return questionText("dosage_safety_check", language);
+  }
+  return null;
 }
 
 function addUnique(list: string[], value: string): void {
@@ -224,6 +255,9 @@ function mergeAdherence(
   input: AdvanceInput,
   sourceTurnId: string,
 ): void {
+  // Context locked adherence (uncertainty, previous day, STT confusion) must
+  // never be replaced by the LLM's guess, even when the model is confident.
+  if (input.signals.adherenceLocked) return;
   const fromAnalysis = input.analysis?.adherenceStatus;
   const next =
     input.signals.adherenceStatus !== "unknown"
@@ -373,6 +407,7 @@ function resolveSymptomQuestions(
   language: SupportedLanguage,
   newSymptomThisTurn: boolean,
   previouslyReported: Set<string>,
+  repeatRequest: boolean,
 ): void {
   const addressedByModel = new Set(
     (input.analysis?.addressedSymptoms ?? [])
@@ -396,12 +431,13 @@ function resolveSymptomQuestions(
     const symptom = question.slice("symptom_details:".length);
     const mentionsSymptom = symptomMentioned(transcript, symptom);
     const looksLikeAnswer =
-      addressedByModel.has(symptom) ||
-      mentionsSymptom ||
-      (!hasModelAddresses &&
-        !newSymptomThisTurn &&
-        singlePending &&
-        DETAIL_PATTERN.test(transcript));
+      !repeatRequest &&
+      (addressedByModel.has(symptom) ||
+        mentionsSymptom ||
+        (!hasModelAddresses &&
+          !newSymptomThisTurn &&
+          singlePending &&
+          DETAIL_PATTERN.test(transcript)));
     if (!closingIntent && !looksLikeAnswer) continue;
 
     if (closingIntent) {
@@ -533,10 +569,18 @@ export function advanceConversation(
 
   if (state.closed) return close(state, state.endReason ?? "completed");
 
+  if (state.turnCount > (input.maxTurns ?? MAX_CONVERSATION_TURNS)) {
+    for (const question of state.openQuestions) {
+      addUnique(state.unansweredQuestions, questionText(question, language));
+    }
+    return close(state, "unresolved");
+  }
+
   const hasAskedSymptomQuestion = state.openQuestions.some(
     (q) => q.startsWith("symptom_details:") && state.askedQuestions.includes(q),
   );
   const closingIntent = isClosingIntent(input.transcript, input.signals, hasAskedSymptomQuestion);
+  const repeatRequest = isRepeatRequest(input.transcript);
   const severe =
     isSevereReport(input.transcript, input.signals) ||
     (input.analysis?.symptoms.some(
@@ -561,6 +605,7 @@ export function advanceConversation(
     language,
     newSymptomThisTurn,
     new Set(previous.symptoms),
+    repeatRequest,
   );
 
   if (input.escalated && state.escalation === "none") state.escalation = "case_opened";
@@ -577,6 +622,13 @@ export function advanceConversation(
   }
 
   refreshActiveConcerns(state);
+
+  if (repeatRequest && !closingIntent && !severe) {
+    const pending = nextPendingQuestion(state, language);
+    return pending
+      ? finish(state, pending, false, "ask_followup")
+      : finish(state, null, false, "reply_only");
+  }
 
   if (input.decision === "clarification_required" && state.symptoms.length === 0) {
     return finish(state, null, false, "reply_only");
@@ -612,6 +664,20 @@ export function advanceConversation(
   ) {
     addUnique(state.askedQuestions, "dosage_safety_check");
     return finish(state, questionText("dosage_safety_check", language), false, "ask_followup");
+  }
+
+  const routineReported =
+    state.medicationStatus === "reported_taken" ||
+    state.medicationStatus === "reported_not_taken";
+  if (
+    routineReported &&
+    state.symptoms.length === 0 &&
+    state.medicationQuestions.length === 0 &&
+    !state.askedQuestions.includes(CLOSING_CHECK_KEY) &&
+    !repeatRequest
+  ) {
+    addUnique(state.askedQuestions, CLOSING_CHECK_KEY);
+    return finish(state, questionText(CLOSING_CHECK_KEY, language), false, "ask_followup");
   }
 
   return close(state, input.escalated ? "escalated" : "completed");

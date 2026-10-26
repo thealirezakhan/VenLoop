@@ -1,11 +1,13 @@
 import { z } from "zod";
 import { env } from "@/lib/env";
+import { normalizeLanguage } from "@/modules/conversation/language";
+import type { SttProviderId } from "@/modules/providers/speech";
 
 /**
- * Optional VerbX speech adapter. Server-only: the API key never reaches the
- * browser and raw provider errors are not surfaced. When no key is configured
- * the routes return an explicit `not_configured` result so the simulator can
- * fall back to typing and label speech as simulated.
+ * Optional speech adapters. Server-only: API keys never reach the browser and
+ * raw provider errors are not surfaced. When no provider is configured the
+ * routes return an explicit `not_configured` result so the simulator can fall
+ * back to typing and label speech as simulated.
  */
 
 const sttResponseSchema = z.object({ text: z.string() });
@@ -19,22 +21,54 @@ const ttsJsonSchema = z.object({
   data: z.object({ audio_base64: z.string().optional() }).optional(),
 });
 
-export type SpeechFailureCode = "not_configured" | "provider_error";
+export type SpeechFailureCode =
+  | "not_configured"
+  | "provider_error"
+  | "invalid_audio"
+  | "rate_limited"
+  | "timeout";
 
 export type SpeechResult<T> =
-  | { ok: true; value: T; simulated: false }
-  | { ok: false; code: SpeechFailureCode; simulated: true };
+  | { ok: true; value: T; simulated: false; provider?: SttProviderId }
+  | {
+      ok: false;
+      code: SpeechFailureCode;
+      simulated: true;
+      retryAfterSeconds?: number;
+    };
+
+const GROQ_TRANSCRIPTION_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
 
 export function verbxConfigured(): boolean {
   return env.SPEECH_PROVIDER === "verbx" && Boolean(env.VERBX_API_KEY);
 }
 
+export function groqSttConfigured(): boolean {
+  return Boolean(env.GROQ_API_KEY);
+}
+
+function activeServerSttProvider(): "groq" | "verbx" | null {
+  if (env.SPEECH_STT_PROVIDER === "groq") {
+    return groqSttConfigured() ? "groq" : null;
+  }
+  if (env.SPEECH_STT_PROVIDER === "verbx") {
+    return verbxConfigured() ? "verbx" : null;
+  }
+  if (env.SPEECH_STT_PROVIDER === "browser") return null;
+  return groqSttConfigured() ? "groq" : verbxConfigured() ? "verbx" : null;
+}
+
 export function speechStatus() {
+  const sttProvider = activeServerSttProvider();
   return {
     provider: env.SPEECH_PROVIDER,
     configured: verbxConfigured(),
+    sttConfigured: sttProvider !== null,
     voiceConfigured: Boolean(env.VERBX_TTS_VOICE_ID),
     mode: verbxConfigured() ? ("live_provider" as const) : ("simulated_fallback" as const),
+    sttSelection: env.SPEECH_STT_PROVIDER,
+    sttProvider: sttProvider ?? ("browser" as const),
+    ttsProvider: verbxConfigured() ? ("verbx" as const) : ("text" as const),
   };
 }
 
@@ -48,6 +82,104 @@ function authHeaders(): Record<string, string> {
 }
 
 export async function transcribeSpeech(input: {
+  audioBase64: string;
+  language: string;
+  audioMimeType?: string;
+}): Promise<SpeechResult<{ text: string }>> {
+  const provider = activeServerSttProvider();
+  if (provider === "groq") return transcribeWithGroq(input);
+  if (provider === "verbx") return transcribeWithVerbx(input);
+  return { ok: false, code: "not_configured", simulated: true };
+}
+
+function retryAfterSeconds(response: Response): number | undefined {
+  const raw = response.headers.get("retry-after");
+  if (!raw) return undefined;
+  const seconds = Number.parseInt(raw, 10);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined;
+}
+
+function audioExtension(mimeType: string | undefined): string {
+  const normalized = (mimeType ?? "audio/webm").split(";")[0]?.trim().toLowerCase();
+  switch (normalized) {
+    case "audio/ogg":
+      return "ogg";
+    case "audio/wav":
+    case "audio/x-wav":
+      return "wav";
+    case "audio/mp4":
+    case "audio/x-m4a":
+      return "m4a";
+    case "audio/mpeg":
+      return "mp3";
+    case "audio/flac":
+      return "flac";
+    default:
+      return "webm";
+  }
+}
+
+async function transcribeWithGroq(input: {
+  audioBase64: string;
+  language: string;
+  audioMimeType?: string;
+}): Promise<SpeechResult<{ text: string }>> {
+  if (!groqSttConfigured()) return { ok: false, code: "not_configured", simulated: true };
+
+  try {
+    const bytes = Buffer.from(input.audioBase64, "base64");
+    if (bytes.length < 10) return { ok: false, code: "invalid_audio", simulated: true };
+
+    const mimeType = input.audioMimeType ?? "audio/webm";
+    const form = new FormData();
+    form.append(
+      "file",
+      new Blob([new Uint8Array(bytes)], { type: mimeType }),
+      `utterance.${audioExtension(mimeType)}`,
+    );
+    form.append("model", env.GROQ_STT_MODEL);
+    form.append("language", normalizeLanguage(input.language));
+    form.append("response_format", "json");
+    form.append("temperature", "0");
+
+    const response = await fetch(GROQ_TRANSCRIPTION_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.GROQ_API_KEY}` },
+      body: form,
+      signal: AbortSignal.timeout(20_000),
+    });
+
+    if (response.status === 429) {
+      return {
+        ok: false,
+        code: "rate_limited",
+        simulated: true,
+        retryAfterSeconds: retryAfterSeconds(response),
+      };
+    }
+    if (response.status === 400 || response.status === 413 || response.status === 415) {
+      return { ok: false, code: "invalid_audio", simulated: true };
+    }
+    if (!response.ok) return { ok: false, code: "provider_error", simulated: true };
+
+    const parsed = sttResponseSchema.safeParse(await response.json());
+    if (!parsed.success || !parsed.data.text.trim()) {
+      return { ok: false, code: "provider_error", simulated: true };
+    }
+    return {
+      ok: true,
+      value: { text: parsed.data.text.trim() },
+      simulated: false,
+      provider: "groq",
+    };
+  } catch (error) {
+    const timedOut =
+      error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+    return { ok: false, code: timedOut ? "timeout" : "provider_error", simulated: true };
+  }
+}
+
+async function transcribeWithVerbx(input: {
   audioBase64: string;
   language: string;
 }): Promise<SpeechResult<{ text: string }>> {
@@ -67,14 +199,29 @@ export async function transcribeSpeech(input: {
       }),
       signal: AbortSignal.timeout(20_000),
     });
+    if (response.status === 429) {
+      return {
+        ok: false,
+        code: "rate_limited",
+        simulated: true,
+        retryAfterSeconds: retryAfterSeconds(response),
+      };
+    }
     if (!response.ok) return { ok: false, code: "provider_error", simulated: true };
     const parsed = sttResponseSchema.safeParse(await response.json());
     if (!parsed.success || !parsed.data.text.trim()) {
       return { ok: false, code: "provider_error", simulated: true };
     }
-    return { ok: true, value: { text: parsed.data.text.trim() }, simulated: false };
-  } catch {
-    return { ok: false, code: "provider_error", simulated: true };
+    return {
+      ok: true,
+      value: { text: parsed.data.text.trim() },
+      simulated: false,
+      provider: "verbx",
+    };
+  } catch (error) {
+    const timedOut =
+      error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+    return { ok: false, code: timedOut ? "timeout" : "provider_error", simulated: true };
   }
 }
 

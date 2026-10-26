@@ -48,7 +48,7 @@ Phases per PRD 19. Do not mark a phase done until its acceptance criteria pass.
 ## Phase 5 — Scenario rehearsal — DONE
 
 - [x] `/demo/call-simulator`: patient picker (deep-linkable via `?patient=`), call-language selector, chat-style transcript with AI/patient/decision bubbles, scenario chips TC1–TC6 (TC2 records a no-answer attempt; TC6 combines breathing trouble + dosage), conversation-state rail, guardrail/telephony panels, start/submit/no-answer against the real pipeline, browser Web Speech mic by default, optional VerbX STT/TTS + translation when `VERBX_API_KEY` and `SPEECH_PROVIDER=verbx` are set, persistent SIMULATED CALL labeling; no fabricated “caregiver alerted” close-out copy
-- [x] Live-tested: TC1 end-to-end (log_adherence → ack.taken → completed); TC4 close-out live (dosage block → follow-up → goodbye)
+- [x] Live-tested: TC1 end-to-end (log_adherence → closing check → completed); TC4 close-out live (dosage block → follow-up → goodbye). Routine calls now stay open for one closing check instead of completing after the first reply.
 
 ## Phase 6 — Evidence, audit, operations — DONE
 
@@ -63,7 +63,7 @@ Phases per PRD 19. Do not mark a phase done until its acceptance criteria pass.
 - [x] CI: `.github/workflows/ci.yml` — lint, typecheck, test (DB suites skip), build
 - [x] Evidence exportable (JSON download)
 - [ ] Deployment smoke tests / running against a deployed app — deferred (local-only per plan)
-- [x] Current verification: `pnpm lint`, `pnpm typecheck`, `pnpm test` (112 passed), `pnpm test:e2e` (9 passed), `pnpm build` all green
+- [x] Current verification: `pnpm lint`, `pnpm typecheck`, `pnpm test` (149 passed, 1 skipped), `pnpm test:e2e` (10 passed), `pnpm build` all green
 
 ## UI pass — neo-tactile redesign — DONE
 
@@ -94,13 +94,26 @@ Phases per PRD 19. Do not mark a phase done until its acceptance criteria pass.
 - [x] Escalation actions use a purpose-scoped idempotency key and cases are deduplicated by check-in + category.
 - [x] Deterministic question/reply flow is unchanged; scripted emergency wording always wins over generic follow-up wording.
 - [x] Optional VerbX adapter (`src/lib/server/speech.ts`, routes `/api/v1/speech/{status,stt,tts}`): STT, TTS, and translation stay server-side with timeouts, input caps, and rate limits. Missing key returns `SPEECH_NOT_CONFIGURED`; the simulator stays text-only and labels speech simulated.
-- [x] Simulator: call-language selector (English/Hindi/Marathi), VerbX batch STT primary when configured, browser speech recognition fallback, 2.5 s silence auto-submit, live-call and turn-based modes, optional spoken replies, active-concern rail, and TC6 one-turn reassessment demo.
+- [x] Simulator: call-language selector (English/Hindi/Marathi), explicit `SPEECH_STT_PROVIDER` selection (`auto` prefers browser, `verbx` uses batch STT), browser recognition with VerbX fallback, 2.5 s silence auto-submit, live-call and turn-based modes, optional spoken replies, active-concern rail, and TC6 one-turn reassessment demo.
 - [x] Non-English input is translated to English only when VerbX is configured; otherwise it degrades to clarification (never a guessed adherence conclusion or missed emergency).
 - [x] Groq cost guards: per-process concurrency cap (4), 8-second timeout, 1024-token cap with strict JSON schema, deterministic replies for routine/duplicate/long turns, recent-turn-only context.
 - [x] Regression tests: `trouble breathing` + dosage extraction, cumulative non-downgrade/upgrade unit tests, DB pipeline symptom→emergency upgrade with two cases and two actions, TC6 e2e.
 - [x] Live VerbX verified with `SPEECH_PROVIDER=verbx`: voice listing, English/Hindi/Marathi TTS, and English→Hindi translation return 200 through the app routes. A Hindi emergency utterance was translated, extracted, and escalated correctly end to end.
 - [ ] Live VerbX STT returned `degraded_reason: provider_outage` with empty text (HTTP 200) during verification. The adapter rejects empty transcripts as `provider_error`; browser speech remains the fallback.
 - Note: the live API accepts the key via `X-API-Key`; its OpenAPI file advertises `Authorization: Bearer`, which returns 401.
+
+## Groq Whisper STT + context-aware transcripts — DONE (acoustic evaluation pending)
+
+- [x] `SPEECH_STT_PROVIDER=groq|auto|browser|verbx` and `GROQ_STT_MODEL=whisper-large-v3-turbo|whisper-large-v3`; `auto` prefers browser, then Groq, then VerbX.
+- [x] Server adapter posts multipart audio to Groq's OpenAI-compatible endpoint with a 20 s timeout, `response_format=json`, `temperature=0`, and the normalized language. It does not retry HTTP 429; `Retry-After` is exposed to the client.
+- [x] Explicit Groq failures do not silently switch to browser/VerbX mid-turn. The simulator switches to typed input with a visible reason and an explicit Retry microphone button.
+- [x] `src/modules/conversation/transcript-interpretation.ts` preserves raw and normalized text, records uncertainty/temporal/mixed-language/STT-confusion metadata, and returns correction candidates that require confirmation. It never rewrites safety-critical text.
+- [x] Uncertain or previous-day adherence is locked to `unknown` + clarification; LLM analysis cannot override a locked status. `"I took it yesterday"` is not treated as today's dose.
+- [x] `conversation_records.transcription_metadata` (migration `20261026120000_transcription_metadata.sql`) stores the interpretation and candidate reasons.
+- [x] Recorded VAD has a 30 s maximum utterance event so a noisy room cannot keep one recording open indefinitely.
+- [x] Unit coverage: cases A–F, `kal` ambiguity, previous-day/current-day split, unrelated symptom uncertainty, meditation/medication confusion, locked state vs LLM override, provider resolution, VAD max duration.
+- [x] Live Groq check with Windows SAPI synthetic WAV, 3 runs per model: both returned the exact sentence `I think I might have taken it, but I cannot remember for sure.` Turbo was 375–532 ms; large-v3 was 384–420 ms. The sample is synthetic English, so this validates integration/latency only, not real-microphone accuracy.
+- [ ] Real microphone recordings and Hindi/Marathi acoustic accuracy — pending; cannot be verified in this environment (no mic input, no Hindi/Marathi TTS voices).
 
 ## Known limitations
 
@@ -109,7 +122,8 @@ Phases per PRD 19. Do not mark a phase done until its acceptance criteria pass.
 - `cacheComponents` disabled in `next.config.ts`: every authenticated page reads cookies at request time; enabling it requires Suspense-wrapping all session reads.
 - PRD 16.4 failure-injection matrix only partially covered (invalid input, consent, transitions covered in unit tests; provider-timeout/DB-down infra scenarios not injected).
 - Real telephony is intentionally not started — simulated calls only. The optional Groq LLM layer only rephrases replies; without `GROQ_API_KEY` the app runs fully scripted.
-- VerbX TTS and translation are verified live. VerbX STT was unavailable upstream (`provider_outage`) during verification; without working STT, non-English speech falls back to browser recognition and non-English typed input still translates once configured.
+- VerbX TTS and translation are verified live. VerbX STT was unavailable upstream (`provider_outage`) during verification; use Groq STT or browser recognition instead. Non-English typed input still translates once VerbX is configured.
+- Groq STT is verified with synthetic English WAV only. Real microphone audio and Hindi/Marathi speech remain unverified; the interpretation layer is conservative and asks for clarification rather than guessing when uncertain.
 - Rate limiting and LLM concurrency caps are per-process/in-memory; a multi-instance deployment needs a shared limiter.
 - Demo calendar/adherence reflect only calls created during a session; past scheduled days render as `no record`, never “missed”.
 - Typing during an in-progress call is not persisted until submitted; only submitted turns appear in evidence.

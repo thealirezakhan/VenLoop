@@ -25,6 +25,7 @@ const ACTION_DECISIONS = new Set([
 
 /** These decisions keep the exact scripted safety wording; no model phrasing. */
 const SCRIPTED_ONLY_DECISIONS = new Set([
+  "dosage_safety_response",
   "emergency_guidance",
   "unreachable_escalation",
   "unresolved",
@@ -244,4 +245,36 @@ export function buildAgentTurn(input: AgentTurnInput): AgentTurn {
         : null,
     source,
   };
+}
+
+/**
+ * The deterministic gate decides whether a question is required. The model may
+ * only rephrase that question; safety-critical questions keep exact wording.
+ */
+export function selectFollowUpQuestion(
+  required: string | null,
+  analysis: ConversationAnalysis,
+  language: SupportedLanguage,
+  decisionType: DecisionType,
+  actionTaken: boolean,
+): string | null {
+  if (!required) return null;
+  if (decisionType === "dosage_safety_response" || decisionType === "emergency_guidance") {
+    return required;
+  }
+  const proposed = analysis.followUpQuestion?.trim() ?? "";
+  if (!proposed || proposed.length > 220) return required;
+  if ((proposed.match(/\?/g) ?? []).length !== 1) return required;
+  if (!replyMatchesLanguage(proposed, language)) return required;
+  if (
+    !checkAgentText({
+      text: proposed,
+      decisionType,
+      actionTaken,
+      allowQuestion: true,
+    }).ok
+  ) {
+    return required;
+  }
+  return proposed;
 }

@@ -19,18 +19,26 @@ separately; no numbers here are fabricated.
 
 ## Microphone path
 
-1. When VerbX is configured, live audio is captured with `MediaRecorder`
-   (WebM/Opus when supported), encoded as base64, and posted to
-   `/api/v1/speech/stt`, which calls the documented batch `POST /v1/stt` with
-   the normalized locale (`en`, `hi`, `mr`). A turn is sent after 2.5 s of
-   silence; resumed speech resets the silence window.
-2. If VerbX is not configured, or the provider fails, browser
-   `SpeechRecognition` is used. Its silence timer is also 2.5 s and is reset by
+1. `SPEECH_STT_PROVIDER` selects `auto` (default), `browser`, `groq`, or
+   `verbx`. `auto` prefers browser `SpeechRecognition`, then Groq when
+   `GROQ_API_KEY` is set, then VerbX. Its silence timer is 2.5 s and is reset by
    each result; partial results never finalize a turn by themselves.
-3. If the browser API is missing or fails with `network`, `not-supported`,
+2. With a batch provider (`groq`/`verbx`, or `auto` when the browser API is
+   missing), live audio is captured with `MediaRecorder` (WebM/Opus when
+   supported), encoded as base64, and posted to `/api/v1/speech/stt`. Groq uses
+   `GROQ_STT_MODEL` (default `whisper-large-v3-turbo`); VerbX uses `POST /v1/stt`.
+   A turn is sent after 2.5 s of silence; resumed speech resets the silence
+   window. Recorded capture is capped at 30 s.
+3. If browser recognition fails with `network`, `not-supported`,
    `service-not-allowed`, `not-allowed`, or `audio-capture`, the simulator
-   returns to the recorded batch path.
-4. The typed fallback is always available and exercises the same turn logic.
+   switches to the recorded batch path; otherwise it uses the typed fallback.
+   The selected provider is shown in the UI and is not swapped silently
+   mid-turn.
+4. A Groq failure (rate limit, timeout, provider error, invalid audio) does not
+   fall back to another provider automatically. The turn switches to typed
+   input with the provider message and a Retry microphone button. HTTP 429 is
+   never retried in a loop; `Retry-After` is surfaced when present.
+5. The typed fallback is always available and exercises the same turn logic.
    Turn-Based Demo keeps the microphone off and submits only on the button.
 
 The call is half-duplex: microphone capture is paused while TTS plays to prevent
@@ -51,6 +59,8 @@ Timing constants:
 | Microphone permission timeout | 12 s |
 | Fallback VAD speech threshold | 0.025 |
 | Fallback VAD minimum speech | 220 ms |
+| Fallback VAD maximum utterance | 30 s |
+| Groq request timeout (server / client) | 20 s / 30 s |
 
 ## Latency measurements
 
@@ -94,6 +104,23 @@ The baseline used the old full-clip playback path and an LLM call. Hindi/Marathi
 baseline runs used romanised input, which the live translator misread and sent
 through the LLM fallback (5.9 to 9.7 s); they are not directly comparable.
 
+## Groq Whisper STT (26 Oct 2026)
+
+Synthetic Windows SAPI WAV, English, same sentence, three runs per model:
+
+| Model | Runs | Transcript |
+|---|---:|---|
+| `whisper-large-v3-turbo` | 532, 375, 400 ms | exact match |
+| `whisper-large-v3` | 396, 384, 420 ms | exact match |
+
+Both models returned `I think I might have taken it, but I cannot remember for
+sure.` The interpretation layer still marks that sentence uncertain and asks
+for clarification. Latency is provider round-trip only (small WAV, no network
+retry, no app overhead). Turbo remains the default.
+
+This does not validate real microphone acoustics or Hindi/Marathi recognition;
+Windows SAPI had only en-US voices in this environment.
+
 ## Remaining bottlenecks
 
 - Non-English translation latency, not TTS, is the limit for Hindi and Marathi.
@@ -110,9 +137,9 @@ through the LLM fallback (5.9 to 9.7 s); they are not directly comparable.
 
 Current:
 
-- `pnpm lint`, `pnpm typecheck`: pass
-- `pnpm exec vitest run tests/unit/voice-activity.test.ts tests/unit/call-state.test.ts`: 12 passed
-- Focused call-simulator E2E (label, turn-based manual submit, nausea, emergency): 4 passed
+- `pnpm lint`, `pnpm typecheck`, `pnpm build`: pass
+- `pnpm test`: 149 passed, 1 skipped (includes live Supabase integration tests)
+- `pnpm test:e2e`: 10 passed (label, turn-based closing turn, nausea follow-up, emergency, scenarios, case workflow, evidence)
 
 Live provider check on 23 Oct 2026 used TTS-generated MP3 and WAV audio against
 `POST /v1/stt` with locale `en` and `en-US`. The provider returned either HTTP

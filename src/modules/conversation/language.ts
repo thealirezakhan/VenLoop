@@ -34,6 +34,7 @@ type Copy = {
   followUpGeneric: string;
   followUpDosage: string;
   dosageSafetyCheck: string;
+  closingCheck: string;
   alreadyEnded: string;
   closingNoAction: (name: string) => string;
   closingWithAction: (name: string) => string;
@@ -91,7 +92,7 @@ const COPY: Record<SupportedLanguage, Copy> = {
     clarify: "I am sorry, I did not catch that.",
     clarifyQuestion: "Could you tell me again whether you have taken your medicine yet?",
     dosage:
-      "I am not able to advise on changing your dose. I have noted your question and I will let your caregiver know.",
+      "I am not able to advise on changing your dose. Please contact your doctor or pharmacist. I have noted your question and I will let your caregiver know.",
     symptom:
       "I am sorry you are not feeling well. I have noted that, and I will let your caregiver know.",
     severeSymptom:
@@ -105,6 +106,7 @@ const COPY: Record<SupportedLanguage, Copy> = {
     followUpDosage: "Is there anything else you would like me to pass on to your caregiver?",
     dosageSafetyCheck:
       "Before we finish, are you having any symptoms right now, such as dizziness, nausea, or trouble breathing?",
+    closingCheck: "Before we finish, is there anything else you would like to tell me?",
     alreadyEnded: "This simulated call has already ended. Thank you.",
     closingNoAction: (name) =>
       `Thank you for talking with me, ${name}. Your check-in is recorded. Take care. Goodbye.`,
@@ -122,7 +124,7 @@ const COPY: Record<SupportedLanguage, Copy> = {
     clarify: "क्षमा करें, मैं समझ नहीं पाया।",
     clarifyQuestion: "क्या आप फिर से बता सकते हैं कि आपने अपनी दवा ली है या नहीं?",
     dosage:
-      "मैं दवा की खुराक बदलने की सलाह नहीं दे सकता। मैंने आपका सवाल दर्ज कर लिया है और आपके देखभालकर्ता को बता दूँगा।",
+      "मैं दवा की खुराक बदलने की सलाह नहीं दे सकता। कृपया अपने डॉक्टर या फार्मासिस्ट से संपर्क करें। मैंने आपका सवाल दर्ज कर लिया है और आपके देखभालकर्ता को बता दूँगा।",
     symptom:
       "मुझे खेद है कि आप अस्वस्थ महसूस कर रहे हैं। मैंने यह दर्ज कर लिया है और आपके देखभालकर्ता को बता दूँगा।",
     severeSymptom:
@@ -136,6 +138,7 @@ const COPY: Record<SupportedLanguage, Copy> = {
     followUpDosage: "क्या कुछ और है जो आप अपने देखभालकर्ता तक पहुँचाना चाहेंगे?",
     dosageSafetyCheck:
       "समाप्त करने से पहले, क्या आपको अभी कोई लक्षण है, जैसे चक्कर, मतली, या सांस लेने में तकलीफ?",
+    closingCheck: "समाप्त करने से पहले, क्या कुछ और है जो आप मुझे बताना चाहेंगे?",
     alreadyEnded: "यह सिम्युलेटेड कॉल पहले ही समाप्त हो चुकी है। धन्यवाद।",
     closingNoAction: (name) =>
       `मेरे साथ बात करने के लिए धन्यवाद, ${name}। आपकी जाँच दर्ज हो गई है। अपना ख्याल रखें। नमस्ते।`,
@@ -153,7 +156,7 @@ const COPY: Record<SupportedLanguage, Copy> = {
     clarify: "क्षमस्व, मला समजले नाही.",
     clarifyQuestion: "तुम्ही तुमचे औषध घेतले आहे की नाही, ते पुन्हा सांगू शकता का?",
     dosage:
-      "मी औषधाची मात्रा बदलण्याचा सल्ला देऊ शकत नाही. मी तुमचा प्रश्न नोंदवला आहे आणि तुमच्या काळजीवाहकाला सांगेन.",
+      "मी औषधाची मात्रा बदलण्याचा सल्ला देऊ शकत नाही. कृपया तुमच्या डॉक्टर किंवा फार्मासिस्टशी संपर्क साधा. मी तुमचा प्रश्न नोंदवला आहे आणि तुमच्या काळजीवाहकाला सांगेन.",
     symptom:
       "तुम्हाला बरे वाटत नसल्याबद्दल मला वाईट वाटते. मी हे नोंदवले आहे आणि तुमच्या काळजीवाहकाला सांगेन.",
     severeSymptom:
@@ -167,6 +170,7 @@ const COPY: Record<SupportedLanguage, Copy> = {
     followUpDosage: "तुमच्या काळजीवाहकाला सांगण्यासारखे अजून काही आहे का?",
     dosageSafetyCheck:
       "संपवण्यापूर्वी, तुम्हाला आत्ता काही लक्षणे आहेत का, जसे चक्कर, मळमळ, किंवा श्वास घेण्यास त्रास?",
+    closingCheck: "संपवण्यापूर्वी, तुम्हाला मला सांगायचे अजून काही आहे का?",
     alreadyEnded: "हा सिम्युलेटेड कॉल आधीच संपला आहे. धन्यवाद.",
     closingNoAction: (name) =>
       `माझ्याशी बोलल्याबद्दल धन्यवाद, ${name}. तुमची तपासणी नोंदवली आहे. काळजी घ्या. नमस्कार.`,
@@ -230,6 +234,10 @@ export function genericFollowUp(language: SupportedLanguage): string {
 
 export function dosageSafetyCheck(language: SupportedLanguage): string {
   return COPY[language].dosageSafetyCheck;
+}
+
+export function closingCheck(language: SupportedLanguage): string {
+  return COPY[language].closingCheck;
 }
 
 export function alreadyEnded(language: SupportedLanguage): string {

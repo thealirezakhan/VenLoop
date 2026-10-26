@@ -22,6 +22,12 @@ const schema = z.object({
   // Server-only. Never expose to the browser (PRD 14).
   SUPABASE_SERVICE_ROLE_KEY: optionalString,
   SPEECH_PROVIDER: z.enum(["mock", "browser", "verbx"]).default("mock"),
+  // auto = browser live recognition first; batch providers only when unavailable.
+  SPEECH_STT_PROVIDER: z.enum(["auto", "browser", "groq", "verbx"]).default("auto"),
+  // Default to the faster Whisper variant; large-v3 can be selected for accuracy.
+  GROQ_STT_MODEL: z
+    .enum(["whisper-large-v3", "whisper-large-v3-turbo"])
+    .default("whisper-large-v3-turbo"),
   // Optional real speech adapter. Missing key = explicit unavailable fallback.
   VERBX_API_KEY: optionalString,
   VERBX_BASE_URL: z.url().default("https://api.verbxeco.com"),
@@ -46,6 +52,8 @@ const raw = {
   NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
   SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
   SPEECH_PROVIDER: process.env.SPEECH_PROVIDER,
+  SPEECH_STT_PROVIDER: process.env.SPEECH_STT_PROVIDER,
+  GROQ_STT_MODEL: process.env.GROQ_STT_MODEL,
   VERBX_API_KEY: process.env.VERBX_API_KEY,
   VERBX_BASE_URL: process.env.VERBX_BASE_URL,
   VERBX_TTS_VOICE_ID: process.env.VERBX_TTS_VOICE_ID,

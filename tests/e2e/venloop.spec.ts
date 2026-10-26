@@ -55,6 +55,11 @@ test.describe("VenLoop e2e (PRD 16.3)", () => {
     await expect(page.getByText("Yes, I took my medicine this morning.", { exact: true }).last()).toBeVisible({
       timeout: 45_000,
     });
+    await expect(page.getByText(/anything else you would like to tell me/i).first()).toBeVisible({
+      timeout: 45_000,
+    });
+    await page.getByLabel("Turn-based patient reply").fill("No, that's all.");
+    await page.getByRole("button", { name: "Submit answer" }).click();
     await expect(page.getByText(/Call complete/i).first()).toBeVisible({ timeout: 45_000 });
   });
 
@@ -67,11 +72,10 @@ test.describe("VenLoop e2e (PRD 16.3)", () => {
     await expect(page.getByText("SIMULATED CALL STARTED", { exact: false }).first()).toBeVisible({
       timeout: 30_000,
     });
-    await expect(page.getByText(/When did the nausea start/i).first()).toBeVisible({ timeout: 45_000 });
-    await expect(page.getByText(/nausea_or_vomiting/i).first()).toBeVisible();
+    await expect(page.getByText(/nausea_or_vomiting/i).first()).toBeVisible({ timeout: 45_000 });
 
     await page.getByText("Type a reply (fallback)").click();
-    await page.getByLabel("Type a reply instead").fill("It started this morning and it is mild.");
+    await page.getByLabel("Type a reply instead").fill("It is mild and started this morning.");
     await page.getByRole("button", { name: "Send typed reply" }).click();
     await expect(page.getByText(/We have recorded your concerns/i).first()).toBeVisible({ timeout: 45_000 });
     await expect(page.getByText(/Call complete/i).first()).toBeVisible({ timeout: 45_000 });

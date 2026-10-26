@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { analyzeTurn, buildAgentTurn } from "@/lib/server/conversation-reply";
+import {
+  analyzeTurn,
+  buildAgentTurn,
+  selectFollowUpQuestion,
+} from "@/lib/server/conversation-reply";
 import { extractSignals } from "@/modules/rules-engine/extract";
 import { emptyConversationState } from "@/modules/conversation/state";
 import type { ConversationAnalysis } from "@/modules/conversation/analysis";
@@ -59,7 +63,7 @@ describe("analyzeTurn latency path", () => {
 });
 
 describe("nurse-style wording", () => {
-  it("uses the model acknowledgement for a combined dosage + symptom turn", () => {
+  it("always uses scripted dosage safety copy, even when the model sounds safer", () => {
     const agent = buildAgentTurn({
       firstName: "Eleanor",
       decisionType: "dosage_safety_response",
@@ -82,15 +86,14 @@ describe("nurse-style wording", () => {
       emergency: false,
     });
 
-    expect(agent.source).toBe("llm");
-    expect(agent.text).toMatch(/took your pill/i);
+    expect(agent.source).toBe("scripted");
+    expect(agent.text).toContain("not able to advise on changing your dose");
+    expect(agent.text).toMatch(/contact your doctor or pharmacist/i);
     expect(agent.text).toMatch(/caregiver/i);
-    expect(agent.text).not.toMatch(/should|pharmacist|doctor/i);
   });
 
-  it("keeps non-emergency scripted copy free of advice", () => {
+  it("keeps non-dosage scripted copy free of advice", () => {
     const texts = [
-      decisionCopy("dosage_safety_response", "en"),
       decisionCopy("symptom_escalation", "en"),
       decisionCopy("symptom_escalation", "en", { severe: true }),
       notTakenCopy("en"),
@@ -115,5 +118,34 @@ describe("nurse-style wording", () => {
         /should|must|contact your doctor|pharmacist|sit or lie|care team|take another|stop taking|change your/i,
       );
     }
+  });
+
+  it("uses the model's follow-up only when it is a safe rephrasing", () => {
+    const required = "When did the nausea start, and is it mild or severe?";
+    const safe = selectFollowUpQuestion(
+      required,
+      analysis({ followUpQuestion: "Has the nausea been mild or severe since this morning?" }),
+      "en",
+      "symptom_escalation",
+      true,
+    );
+    const unsafe = selectFollowUpQuestion(
+      required,
+      analysis({ followUpQuestion: "You should stop taking your medicine. When did it start?" }),
+      "en",
+      "symptom_escalation",
+      true,
+    );
+    const dosage = selectFollowUpQuestion(
+      "Before we finish, are you having any symptoms right now?",
+      analysis({ followUpQuestion: "Anything else?" }),
+      "en",
+      "dosage_safety_response",
+      true,
+    );
+
+    expect(safe).toBe("Has the nausea been mild or severe since this morning?");
+    expect(unsafe).toBe(required);
+    expect(dosage).toBe("Before we finish, are you having any symptoms right now?");
   });
 });

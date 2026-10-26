@@ -2,7 +2,7 @@ import { adminClient } from "./admin";
 import { ApiFailure } from "./failures";
 import { canViewPatient, type Role } from "@/lib/permissions";
 import { evaluateDecision } from "@/modules/rules-engine/rules";
-import { extractSignals, type ExtractedSignals } from "@/modules/rules-engine/extract";
+import type { ExtractedSignals } from "@/modules/rules-engine/extract";
 import { canonicalSymptomCode } from "@/modules/rules-engine/symptoms";
 import {
   RULE_SET_VERSION,
@@ -18,6 +18,7 @@ import type { AuditEventType } from "@/modules/workflow/audit-events";
 import {
   advanceConversation,
   escalationPriority,
+  isClosingIntent,
   type ConversationState,
   type ReplySource,
 } from "@/modules/conversation/state";
@@ -30,7 +31,12 @@ import {
   type ConversationTurn,
   type PatientConversationContext,
 } from "./conversation-store";
-import { actionTakenFor, analyzeTurn, buildAgentTurn } from "./conversation-reply";
+import {
+  actionTakenFor,
+  analyzeTurn,
+  buildAgentTurn,
+  selectFollowUpQuestion,
+} from "./conversation-reply";
 import { translateText, verbxConfigured } from "./speech";
 import {
   alreadyEnded,
@@ -38,6 +44,10 @@ import {
   type SupportedLanguage,
 } from "@/modules/conversation/language";
 import type { ConversationAnalysis } from "@/modules/conversation/analysis";
+import {
+  interpretTranscript,
+  type TranscriptInterpretation,
+} from "@/modules/conversation/transcript-interpretation";
 
 export interface Actor {
   id: string;
@@ -158,6 +168,34 @@ async function applyCheckInTransition<T extends CheckInRow>(
   return data as T;
 }
 
+/**
+ * The conversation gate, not the first patient turn, owns call completion.
+ * Escalation decisions already moved the check-in through action verification.
+ */
+async function finalizeClosedConversation(
+  actor: Actor,
+  row: CheckInRow,
+  state: ConversationState,
+): Promise<CheckInRow> {
+  if (!state.closed) return row;
+  if (state.endReason === "escalated") return row;
+  const target: CheckInState = state.endReason === "unresolved" ? "unresolved" : "completed";
+  if (row.status === target) return row;
+  if (row.status === "completed" || row.status === "unresolved" || row.status === "failed") {
+    return row;
+  }
+  const updated = await applyCheckInTransition(row, target, {
+    completed_at: target === "completed" ? new Date().toISOString() : null,
+  });
+  if (target === "completed") {
+    await verifyReadBack(actor.id, updated.id, false);
+  }
+  await audit(actor.id, target === "completed" ? "check_in.completed" : "check_in.unresolved", "check_in", updated.id, {
+    endReason: state.endReason,
+  });
+  return target === "completed" ? (await loadCheckIn(actor, updated.id)) : updated;
+}
+
 async function applyActionTransition(
   actionId: string,
   from: ActionState,
@@ -271,11 +309,19 @@ export async function submitInput(
   }
 
   const previousState = await loadConversationState(row.id);
+  if (previousState.turnCount > 0) {
+    return continueConversation(actor, row, input);
+  }
   const history = await loadHistory(row.id);
   const language = normalizeLanguage(input.language?.trim() || (await patientLanguage(row.patient_id)));
   const normalized = await normalizeTranscript(input.transcript, language, input.inputSource);
   const patientContext = await loadPatientConversationContext(row.patient_id, normalized.text);
-  const deterministic = extractSignals(normalized.text);
+  const interpretation = interpretTranscript({
+    rawTranscript: input.transcript,
+    normalizedTranscript: normalized.text,
+    language,
+  });
+  const deterministic = interpretation.interpretedSignals;
   const analyzed = await analyzeTurn({
     firstName: patientContext.firstName,
     transcript: input.transcript,
@@ -296,6 +342,7 @@ export async function submitInput(
     normalized.text,
     normalized.translated,
     analyzed,
+    interpretation,
   );
   await storeSignals(actor, row, conversationId, signals, analyzed);
 
@@ -353,7 +400,12 @@ async function continueConversation(
   const history = await loadHistory(row.id);
   const normalized = await normalizeTranscript(input.transcript, language, input.inputSource);
   const patientContext = await loadPatientConversationContext(row.patient_id, normalized.text);
-  const deterministic = extractSignals(normalized.text);
+  const interpretation = interpretTranscript({
+    rawTranscript: input.transcript,
+    normalizedTranscript: normalized.text,
+    language,
+  });
+  const deterministic = interpretation.interpretedSignals;
   const analyzed = await analyzeTurn({
     firstName: patientContext.firstName,
     transcript: input.transcript,
@@ -374,6 +426,7 @@ async function continueConversation(
     normalized.text,
     normalized.translated,
     analyzed,
+    interpretation,
   );
   await storeSignals(actor, row, conversationId, signals, analyzed);
 
@@ -384,8 +437,10 @@ async function continueConversation(
     adherenceStatus:
       signals.adherenceStatus !== "unknown" ? signals.adherenceStatus : previousState.medicationStatus,
     symptoms: [...new Set([...previousState.symptoms, ...signals.symptoms])],
-    dosageQuestion: signals.dosageQuestion || previousState.medicationQuestions.length > 0,
-    needsClarification: false,
+    // Only the current utterance can be a dosage question. Carrying the flag
+    // forward re-triggered the same safety block on every later turn.
+    dosageQuestion: signals.dosageQuestion,
+    needsClarification: signals.adherenceLocked === true,
     noAnswerAttempts: 0,
     consentValid: true,
     emergency: signals.emergency || previousState.escalation === "emergency",
@@ -393,37 +448,68 @@ async function continueConversation(
   });
   let decisionId = latest.id;
   let actionId: string | null = null;
-  if (escalationPriority(cumulative.type) > escalationPriority(latest.type)) {
+  let checkIn = row;
+  const isUpgrade = escalationPriority(cumulative.type) > escalationPriority(latest.type);
+  const isRoutineChange =
+    cumulative.type !== latest.type &&
+    (latest.type === "log_adherence" || latest.type === "clarification_required");
+  if (isUpgrade) {
     actionId = await openEscalationUpgrade(actor, row, cumulative);
+    if (row.status !== "escalated") {
+      checkIn = await applyCheckInTransition(row, "escalated");
+    }
+  }
+  if (isUpgrade || isRoutineChange) {
     const stored = await recordDecision(actor, row, cumulative);
     decisionId = stored.id;
   }
   await ensureConcernCoverage(actor, row, cumulative, signals);
 
+  const escalated =
+    checkIn.status === "escalated" ||
+    checkIn.status === "awaiting_approval" ||
+    previousState.escalation !== "none";
   const next = advanceConversation(previousState, {
     transcript: normalized.text,
     signals,
     decision: cumulative.type,
-    escalated: true,
+    escalated,
     analysis: analyzed.analysis,
     analysisSource: analyzed.source,
     sourceTurnId: conversationId,
     language,
   });
+  const closingIntent = isClosingIntent(normalized.text, signals);
+  const newSafetySignal =
+    signals.emergency ||
+    signals.symptoms.length > 0 ||
+    signals.dosageQuestion;
+  // A closing turn ("No, that's all") should close with the concern that was
+  // actually handled, not downgrade the call to a routine acknowledgement.
+  const agentDecision =
+    next.closing && closingIntent && !newSafetySignal ? latest.type : cumulative.type;
+  const agentActionTaken =
+    actionTakenFor(agentDecision) || previousState.escalation !== "none";
   const agent = buildAgentTurn({
     firstName: patientContext.firstName,
-    decisionType: cumulative.type,
-    adherenceStatus: cumulative.type === "log_adherence" ? (signals.adherenceStatus !== "unknown" ? signals.adherenceStatus : previousState.medicationStatus) : signals.adherenceStatus,
+    decisionType: agentDecision,
+    adherenceStatus: agentDecision === "log_adherence" ? (signals.adherenceStatus !== "unknown" ? signals.adherenceStatus : previousState.medicationStatus) : signals.adherenceStatus,
     state: next.state,
     analysis: analyzed.analysis,
     analysisSource: analyzed.source,
     language,
-    actionTaken: actionTakenFor(cumulative.type),
+    actionTaken: agentActionTaken,
     isFollowUp: true,
     closing: next.closing,
     emergency: next.state.escalation === "emergency",
   });
-  const followUpQuestion = next.followUpQuestion ?? agent.followUpQuestion;
+  const followUpQuestion = selectFollowUpQuestion(
+    next.followUpQuestion ?? agent.followUpQuestion,
+    analyzed.analysis,
+    language,
+    agentDecision,
+    agentActionTaken,
+  );
 
   await recordAgentTurn(conversationId, agent.text, followUpQuestion);
   await saveConversationState(row.id, next.state, agent.source);
@@ -433,12 +519,13 @@ async function continueConversation(
     replySource: agent.source,
     analysisSource: analyzed.source,
     openQuestionCount: next.state.openQuestions.length,
-    activeConcern: cumulative.type,
+    activeConcern: agentDecision,
     activeConcerns: next.state.activeConcerns,
   });
+  const finalized = await finalizeClosedConversation(actor, checkIn, next.state);
 
   return {
-    checkIn: row,
+    checkIn: finalized,
     decision: {
       id: decisionId,
       type: cumulative.type,
@@ -519,11 +606,8 @@ async function decideAndRoute(
       break;
     }
     case "log_adherence": {
-      checkIn = await applyCheckInTransition(row, "completed", {
-        completed_at: new Date().toISOString(),
-      });
-      await verifyReadBack(actor.id, checkIn.id, false);
-      await audit(actor.id, "check_in.completed", "check_in", checkIn.id);
+      // Keep the call open for the closing check; finalize after the gate closes.
+      checkIn = row;
       break;
     }
     case "unresolved": {
@@ -601,7 +685,13 @@ async function decideAndRoute(
     closing: next.closing,
     emergency: next.state.escalation === "emergency",
   });
-  const followUpQuestion = next.followUpQuestion ?? agent.followUpQuestion;
+  const followUpQuestion = selectFollowUpQuestion(
+    next.followUpQuestion ?? agent.followUpQuestion,
+    conversation.analysis,
+    conversation.language,
+    decision.type,
+    actionTakenFor(decision.type),
+  );
 
   await recordAgentTurn(conversation.conversationId, agent.text, followUpQuestion);
   await saveConversationState(row.id, next.state, agent.source);
@@ -613,6 +703,7 @@ async function decideAndRoute(
     openQuestionCount: next.state.openQuestions.length,
     activeConcerns: next.state.activeConcerns,
   });
+  checkIn = await finalizeClosedConversation(actor, checkIn, next.state);
 
   return {
     checkIn,
@@ -662,6 +753,7 @@ async function storeConversationTurn(
   normalizedTranscript: string,
   translated: boolean,
   analyzed: { analysis: ConversationAnalysis; source: "llm" | "deterministic" },
+  interpretation: TranscriptInterpretation,
 ): Promise<string> {
   const devanagari = /[\u0900-\u097F]/.test(input.transcript);
   const { data, error } = await adminClient()
@@ -676,6 +768,16 @@ async function storeConversationTurn(
       extraction_status: "extracted",
       analysis: analyzed.analysis,
       analysis_source: analyzed.source,
+      transcription_metadata: {
+        rawTranscript: interpretation.rawTranscript,
+        normalizedTranscript: interpretation.normalizedTranscript,
+        correctedTranscript: interpretation.correctedTranscript,
+        language: interpretation.language,
+        correctionStatus: interpretation.correctionStatus,
+        correctionReason: interpretation.correctionReason,
+        correctionCandidates: interpretation.correctionCandidates,
+        interpretedSignals: interpretation.interpretedSignals,
+      },
     })
     .select("id")
     .single();
@@ -698,6 +800,16 @@ function mergeSignals(
         .filter((code): code is string => Boolean(code)),
     ),
   ];
+  if (deterministic.adherenceLocked) {
+    return {
+      adherenceStatus: "unknown",
+      symptoms,
+      dosageQuestion: deterministic.dosageQuestion || analysis.dosageQuestion,
+      needsClarification: true,
+      emergency: deterministic.emergency || analysis.emergency,
+      adherenceLocked: true,
+    };
+  }
   const adherenceStatus =
     deterministic.adherenceStatus !== "unknown"
       ? deterministic.adherenceStatus
@@ -709,6 +821,7 @@ function mergeSignals(
     needsClarification:
       adherenceStatus === "unknown" && symptoms.length === 0 && deterministic.needsClarification,
     emergency: deterministic.emergency || analysis.emergency,
+    adherenceLocked: deterministic.adherenceLocked,
   };
 }
 
@@ -1001,7 +1114,15 @@ async function openEscalationUpgrade(
     decision.responseKey,
     decision.type,
   );
-  await deliverAction(actionId, decision.type);
+  const { data: existingAction } = await adminClient()
+    .from("actions")
+    .select("status")
+    .eq("id", actionId)
+    .single();
+  // Idempotency can return an action that already delivered this exact concern.
+  if (existingAction?.status !== "succeeded") {
+    await deliverAction(actionId, decision.type);
+  }
   await createEscalationCase(actor, row, actionId, decision.type, decision.explanation);
   await audit(actor.id, "escalation.upgraded", "check_in", row.id, {
     decisionType: decision.type,

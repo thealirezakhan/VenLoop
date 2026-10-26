@@ -107,12 +107,14 @@ describe("conversation regressions", () => {
     const first = turn(emptyConversationState(), "I feel nauseous.", "symptom_escalation", true);
     const second = turn(first.state, "I don't know.", "symptom_escalation", true);
     const third = turn(second.state, "I am not sure.", "symptom_escalation", true);
+    const fourth = turn(third.state, "I still do not know.", "symptom_escalation", true);
 
     expect(second.followUpQuestion).toMatch(/nausea/i);
-    expect(third.followUpQuestion).toBeNull();
-    expect(third.state.followUpAttempts["symptom_details:nausea_or_vomiting"]).toBe(2);
-    expect(third.state.unansweredQuestions.join(" ")).toMatch(/nausea/i);
-    expect(third.closing).toBe(true);
+    expect(third.followUpQuestion).toMatch(/nausea/i);
+    expect(fourth.followUpQuestion).toBeNull();
+    expect(fourth.state.followUpAttempts["symptom_details:nausea_or_vomiting"]).toBe(3);
+    expect(fourth.state.unansweredQuestions.join(" ")).toMatch(/nausea/i);
+    expect(fourth.closing).toBe(true);
   });
 
   it("ends immediately on an emergency during an open symptom assessment", () => {

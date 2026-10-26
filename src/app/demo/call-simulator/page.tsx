@@ -19,6 +19,7 @@ import {
   VoiceActivityDetector,
 } from "@/modules/audio/voice-activity";
 import { closingCopy, decisionCopy, greeting, normalizeLanguage } from "@/modules/conversation/language";
+import { resolveSttProvider, type SttSelection } from "@/modules/providers/speech";
 
 interface PatientOption {
   id: string;
@@ -80,8 +81,18 @@ const BARGE_THRESHOLD = 0.11;
 interface SpeechStatus {
   provider: string;
   configured: boolean;
+  sttConfigured: boolean;
   voiceConfigured: boolean;
   mode: "live_provider" | "simulated_fallback";
+  sttSelection: SttSelection;
+  sttProvider: "browser" | "groq" | "verbx";
+  ttsProvider: "verbx" | "text";
+}
+
+function sttLabel(provider: SpeechStatus["sttProvider"]): string {
+  if (provider === "groq") return "Groq Whisper STT";
+  if (provider === "verbx") return "VerbX batch STT";
+  return "Browser STT";
 }
 
 interface ConversationStateDto {
@@ -174,10 +185,6 @@ interface SpeechRecognitionLike {
 }
 
 type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
-
-const FIXED_GREETINGS = new Set<string>(
-  SUPPORTED_LANGUAGES.map((option) => greeting(normalizeLanguage(option.code))),
-);
 
 const INPUT_STATUSES = new Set([
   "in_progress",
@@ -313,6 +320,11 @@ export default function CallSimulatorPage() {
   const [selectedScenarioId, setSelectedScenarioId] = useState("live");
   const [typedText, setTypedText] = useState("");
   const [lastSpoken, setLastSpoken] = useState<{ text: string; lang: string } | null>(null);
+  const [latency, setLatency] = useState<{
+    replyMs: number;
+    firstAudioMs: number | null;
+    resumedMs: number;
+  } | null>(null);
 
   const mountedRef = useRef(true);
   const callEpochRef = useRef(0);
@@ -346,11 +358,16 @@ export default function CallSimulatorPage() {
   const playResolveRef = useRef<(() => void) | null>(null);
   const speechStartedAtRef = useRef(0);
   const lastLevelRenderRef = useRef(0);
+  const turnStartedAtRef = useRef(0);
+  const replyReceivedAtRef = useRef(0);
+  const firstAudioAtRef = useRef(0);
 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const recognitionGenRef = useRef(0);
   const recognitionWantedRef = useRef(false);
   const recognitionUnavailableRef = useRef(false);
-  const verbxUnavailableRef = useRef(false);
+  const batchUnavailableRef = useRef(false);
+  const batchRetryBlockedRef = useRef(false);
   const useFallbackRef = useRef(false);
   const ignoreEndRef = useRef(false);
   const finalTextRef = useRef("");
@@ -362,9 +379,8 @@ export default function CallSimulatorPage() {
   const fallbackVadTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const ttsAbortRef = useRef<AbortController | null>(null);
+  const ttsControllersRef = useRef<Set<AbortController>>(new Set());
   const ttsCacheRef = useRef<Map<string, Blob>>(new Map());
-  const cacheableSpeechRef = useRef<Set<string>>(new Set(FIXED_GREETINGS));
   const ttsInFlightRef = useRef<Map<string, Promise<Blob | null>>>(new Map());
   const prefetchRunRef = useRef<Set<string>>(new Set());
   const speechSeqRef = useRef(0);
@@ -446,6 +462,31 @@ export default function CallSimulatorPage() {
   }, [speech]);
 
   useEffect(() => {
+    const recover = () => {
+      if (
+        callActiveRef.current &&
+        phaseRef.current === "listening" &&
+        !micMutedRef.current &&
+        !recognitionRef.current &&
+        !fallbackRef.current &&
+        micRef.current
+      ) {
+        void startListening(callEpochRef.current);
+      }
+    };
+    const id = setInterval(recover, 4_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") recover();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
     languageRef.current = language;
   }, [language]);
 
@@ -505,7 +546,7 @@ export default function CallSimulatorPage() {
   }, [phase]);
 
   useEffect(() => {
-    if (!speech?.configured || !speakerOn || phase !== "listening") return;
+    if (!speech?.configured || !speakerOn) return;
     const activePatient = patients.find((row) => row.id === patientId);
     const firstName = activePatient?.display_name.trim().split(/\s+/)[0] ?? "";
     if (!firstName) return;
@@ -517,6 +558,7 @@ export default function CallSimulatorPage() {
       emergency: false,
     });
     const candidates = [
+      greeting(lang),
       `${decisionCopy("log_adherence", lang)} ${noAction}`,
       decisionCopy("emergency_guidance", lang),
       ...(lang === "en"
@@ -528,28 +570,11 @@ export default function CallSimulatorPage() {
     prefetchRunRef.current.add(runKey);
     const pending = [...new Set(candidates)]
       .map((raw) => splitForSpeech(raw)[0])
-      .filter((text): text is string => Boolean(text))
-      .map((text) => ({ text, cacheKey: `${lang}:${text}` }))
-      .filter(({ cacheKey }) => !ttsCacheRef.current.has(cacheKey));
-    void (async () => {
-      for (const { text, cacheKey } of pending) {
-        try {
-          const res = await fetch("/api/v1/speech/tts", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text, language: lang }),
-          });
-          if (!res.ok) continue;
-          const blob = await res.blob();
-          if (!blob.size) continue;
-          cacheableSpeechRef.current.add(text);
-          ttsCacheRef.current.set(cacheKey, blob);
-        } catch {
-          // Prefetch is best effort; the live request still runs on submit.
-        }
-      }
-    })();
-  }, [speech?.configured, speakerOn, language, patients, patientId, phase]);
+      .filter((text): text is string => Boolean(text));
+    // Warm the first sentence of fixed safety copy before the call starts, so
+    // greeting/first-reply latency does not include TTS cold synthesis.
+    void Promise.all(pending.map((text) => fetchSpeechBlob(text, lang)));
+  }, [speech?.configured, speakerOn, language, patients, patientId]);
 
 
   function sleep(ms: number): Promise<void> {
@@ -713,9 +738,8 @@ export default function CallSimulatorPage() {
 
   function stopPlaybackInternal() {
     speechSeqRef.current += 1;
-    const controller = ttsAbortRef.current;
-    ttsAbortRef.current = null;
-    controller?.abort();
+    for (const controller of ttsControllersRef.current) controller.abort();
+    ttsControllersRef.current.clear();
     const audio = audioRef.current;
     if (audio) {
       audio.onended = null;
@@ -741,10 +765,7 @@ export default function CallSimulatorPage() {
       void finishCall();
       return;
     }
-    setPhase("listening");
-    const epoch = callEpochRef.current;
-    if (useFallbackRef.current || recognitionUnavailableRef.current) startFallbackCapture(epoch, true);
-    else startRecognition(epoch);
+    void startListening(callEpochRef.current);
   }
 
   async function fetchSpeechBlob(text: string, lang: string): Promise<Blob | null> {
@@ -754,9 +775,9 @@ export default function CallSimulatorPage() {
     const pending = ttsInFlightRef.current.get(key);
     if (pending) return pending;
     const promise = (async () => {
+      const controller = new AbortController();
+      ttsControllersRef.current.add(controller);
       try {
-        const controller = new AbortController();
-        ttsAbortRef.current = controller;
         const res = await fetch("/api/v1/speech/tts", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -775,6 +796,7 @@ export default function CallSimulatorPage() {
       } catch {
         return null;
       } finally {
+        ttsControllersRef.current.delete(controller);
         ttsInFlightRef.current.delete(key);
       }
     })();
@@ -808,7 +830,9 @@ export default function CallSimulatorPage() {
     if (!audio) return false;
     const seq = speechSeqRef.current + 1;
     speechSeqRef.current = seq;
-    ttsAbortRef.current = null;
+    // Start every sentence request at once so later chunks are ready before
+    // the current one finishes playing.
+    const requests = chunks.map((chunk) => fetchSpeechBlob(chunk, lang));
     try {
       const context = await ensureAudioContext();
       if (seq !== speechSeqRef.current || epoch !== callEpochRef.current) return false;
@@ -824,15 +848,16 @@ export default function CallSimulatorPage() {
       }
       let played = false;
       let failed = 0;
-      for (const chunk of chunks) {
+      for (let index = 0; index < chunks.length; index += 1) {
         if (seq !== speechSeqRef.current || epoch !== callEpochRef.current) return played;
-        const blob = await fetchSpeechBlob(chunk, lang);
+        const blob = await requests[index];
         if (seq !== speechSeqRef.current || epoch !== callEpochRef.current) return played;
         if (!blob) {
           failed += 1;
           continue;
         }
         speechStartedAtRef.current = performance.now();
+        if (!firstAudioAtRef.current) firstAudioAtRef.current = speechStartedAtRef.current;
         played = true;
         await playBlob(audio, blob);
         if (seq !== speechSeqRef.current || epoch !== callEpochRef.current) return played;
@@ -843,8 +868,6 @@ export default function CallSimulatorPage() {
       return played;
     } catch {
       return false;
-    } finally {
-      if (seq === speechSeqRef.current) ttsAbortRef.current = null;
     }
   }
 
@@ -883,6 +906,7 @@ export default function CallSimulatorPage() {
 
   function stopRecognitionInternal() {
     recognitionWantedRef.current = false;
+    recognitionGenRef.current += 1;
     clearSilenceTimer();
     clearRecognitionRestart();
     const recognition = recognitionRef.current;
@@ -910,6 +934,9 @@ export default function CallSimulatorPage() {
     fallbackRef.current = null;
     if (session) {
       session.stopping = true;
+      // Detach callbacks so an intentional stop cannot restart capture later.
+      session.recorder.ondataavailable = null;
+      session.recorder.onstop = null;
       if (session.recorder.state !== "inactive") {
         try {
           session.recorder.stop();
@@ -931,7 +958,19 @@ export default function CallSimulatorPage() {
         phaseRef.current === "listening" &&
         !micMutedRef.current
       ) {
-        startRecognition(epoch);
+        if (useFallbackRef.current || recognitionUnavailableRef.current) {
+          if (
+            speechRef.current?.sttConfigured &&
+            !batchUnavailableRef.current &&
+            !batchRetryBlockedRef.current
+          ) {
+            void startFallbackCapture(epoch, true);
+          } else {
+            setPhase("text_fallback");
+          }
+        } else {
+          startRecognition(epoch);
+        }
       }
     }, RECOGNITION_RESTART_MS);
   }
@@ -976,88 +1015,106 @@ export default function CallSimulatorPage() {
     ) {
       return;
     }
-    if ((speechRef.current?.configured && !verbxUnavailableRef.current) || useFallbackRef.current || recognitionUnavailableRef.current) {
-      startFallbackCapture(epoch, false);
-      return;
-    }
     const Ctor = getSpeechRecognitionCtor();
     if (!Ctor) {
       useFallbackRef.current = true;
-      setVoiceNote("This browser has no built-in speech recognition, so the configured speech-to-text service is used.");
-      startFallbackCapture(epoch, false);
+      if (
+        speechRef.current?.sttConfigured &&
+        !batchUnavailableRef.current &&
+        !batchRetryBlockedRef.current
+      ) {
+        setVoiceNote("This browser has no built-in speech recognition, so the configured speech-to-text service is used.");
+        void startFallbackCapture(epoch, false);
+      } else {
+        setPhase("text_fallback");
+        setVoiceNote("No microphone speech-to-text is available. Type the patient's reply.");
+      }
       return;
     }
-    let recognition = recognitionRef.current;
-    if (!recognition) {
-      recognition = new Ctor();
-      recognitionRef.current = recognition;
-      recognition.onstart = () => {
-        if (mountedRef.current) setMicStateSafe("ready");
-      };
-      recognition.onresult = (event) => {
-        if (phaseRef.current !== "listening") return;
-        let interimPart = "";
-        for (let i = event.resultIndex; i < event.results.length; i += 1) {
-          const result = event.results[i];
-          const transcript = result?.[0]?.transcript ?? "";
-          if (result?.isFinal) {
-            finalTextRef.current = joinTranscript(finalTextRef.current, transcript);
-          } else {
-            interimPart = `${interimPart} ${transcript}`.trim();
-          }
-        }
-        interimTextRef.current = interimPart;
-        const combined = joinTranscript(finalTextRef.current, interimPart);
-        if (mountedRef.current) setInterim(combined);
-        if (combined) {
-          clearSilenceTimer();
-          silenceTimerRef.current = setTimeout(() => {
-            silenceTimerRef.current = null;
-            finishBrowserUtterance();
-          }, SILENCE_MS);
-        }
-      };
-      recognition.onerror = (event) => {
-        const code = event.error ?? "";
-        if (code === "no-speech" || code === "aborted") return;
-        if (code === "not-allowed" || code === "service-not-allowed") {
-          recognitionUnavailableRef.current = true;
-          useFallbackRef.current = true;
-          setMicError("Browser speech recognition was blocked. The configured speech service is used instead.");
-          return;
-        }
-        if (code === "audio-capture") {
-          recognitionUnavailableRef.current = true;
-          useFallbackRef.current = true;
-          setMicError("No microphone input reached browser speech recognition. The configured speech service is used instead.");
-          return;
-        }
-        if (code === "network") {
-          recognitionUnavailableRef.current = true;
-          useFallbackRef.current = true;
-          setMicError("Browser speech recognition lost its network connection. The configured speech service is used instead.");
-          return;
-        }
-        if (code === "not-supported") {
-          recognitionUnavailableRef.current = true;
-          useFallbackRef.current = true;
-          setMicError("This browser does not support built-in speech recognition. Use the configured speech service or type the reply.");
-        }
-      };
-      recognition.onend = () => {
-        if (ignoreEndRef.current) {
-          ignoreEndRef.current = false;
-          return;
-        }
-        if (!recognitionWantedRef.current) return;
-        if (interimTextRef.current) {
-          finalTextRef.current = joinTranscript(finalTextRef.current, interimTextRef.current);
-          interimTextRef.current = "";
-          if (mountedRef.current) setInterim(finalTextRef.current);
-        }
-        scheduleRecognitionRestart(epoch);
-      };
+    const previous = recognitionRef.current;
+    recognitionRef.current = null;
+    if (previous) {
+      ignoreEndRef.current = true;
+      try {
+        if (previous.abort) previous.abort();
+        else previous.stop();
+      } catch {
+        // Already ended.
+      }
     }
+    const gen = recognitionGenRef.current + 1;
+    recognitionGenRef.current = gen;
+    // A stale onend from the previous instance must not suppress this one.
+    ignoreEndRef.current = false;
+    const recognition = new Ctor();
+    recognitionRef.current = recognition;
+    const isCurrent = () =>
+      gen === recognitionGenRef.current &&
+      recognitionRef.current === recognition &&
+      epoch === callEpochRef.current;
+    recognition.onstart = () => {
+      if (!isCurrent()) return;
+      if (mountedRef.current) setMicStateSafe("ready");
+    };
+    recognition.onresult = (event) => {
+      if (!isCurrent() || phaseRef.current !== "listening") return;
+      let interimPart = "";
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        const result = event.results[i];
+        const transcript = result?.[0]?.transcript ?? "";
+        if (result?.isFinal) {
+          finalTextRef.current = joinTranscript(finalTextRef.current, transcript);
+        } else {
+          interimPart = `${interimPart} ${transcript}`.trim();
+        }
+      }
+      interimTextRef.current = interimPart;
+      const combined = joinTranscript(finalTextRef.current, interimPart);
+      if (mountedRef.current) setInterim(combined);
+      if (combined) {
+        clearSilenceTimer();
+        silenceTimerRef.current = setTimeout(() => {
+          silenceTimerRef.current = null;
+          finishBrowserUtterance();
+        }, SILENCE_MS);
+      }
+    };
+    recognition.onerror = (event) => {
+      if (!isCurrent()) return;
+      const code = event.error ?? "";
+      if (code === "no-speech" || code === "aborted") return;
+      if (
+        code === "not-allowed" ||
+        code === "service-not-allowed" ||
+        code === "audio-capture" ||
+        code === "network" ||
+        code === "not-supported"
+      ) {
+        recognitionUnavailableRef.current = true;
+        useFallbackRef.current = true;
+        setMicError(
+          speechRef.current?.sttConfigured &&
+            !batchUnavailableRef.current &&
+            !batchRetryBlockedRef.current
+            ? "Browser speech recognition is unavailable. The configured speech service is used and a turn may take longer."
+            : "Browser speech recognition is unavailable. Type the patient's reply.",
+        );
+      }
+    };
+    recognition.onend = () => {
+      if (!isCurrent()) return;
+      if (ignoreEndRef.current) {
+        ignoreEndRef.current = false;
+        return;
+      }
+      if (!recognitionWantedRef.current) return;
+      if (interimTextRef.current) {
+        finalTextRef.current = joinTranscript(finalTextRef.current, interimTextRef.current);
+        interimTextRef.current = "";
+        if (mountedRef.current) setInterim(finalTextRef.current);
+      }
+      scheduleRecognitionRestart(epoch);
+    };
     recognition.lang = readBrowserLanguage();
     recognition.continuous = true;
     recognition.interimResults = true;
@@ -1090,25 +1147,50 @@ export default function CallSimulatorPage() {
       const res = await fetch("/api/v1/speech/stt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ audioBase64, language: normalizeLanguage(languageRef.current) }),
+        body: JSON.stringify({
+          audioBase64,
+          language: normalizeLanguage(languageRef.current),
+          audioMimeType: blob.type || undefined,
+        }),
+        signal: AbortSignal.timeout(30_000),
       });
       const body = (await res.json().catch(() => ({}))) as {
-        data?: { text?: string };
-        error?: { message?: string };
+        data?: { text?: string; provider?: string };
+        error?: { code?: string; message?: string };
       };
-      if (!res.ok) throw new Error(body.error?.message ?? "Speech-to-text failed.");
+      if (!res.ok) {
+        if (speechRef.current?.sttProvider === "groq") {
+          batchRetryBlockedRef.current = true;
+          setVoiceNote(
+            `${body.error?.message ?? "Groq speech-to-text failed."} Press Retry microphone to try voice again; typing still works.`,
+          );
+          setPhase("text_fallback");
+          setMicStateSafe("ready");
+          return;
+        }
+        throw new Error(body.error?.message ?? "Speech-to-text failed.");
+      }
       const text = body.data?.text?.trim();
       if (!text) throw new Error("No speech was transcribed. Try again or type the answer.");
       if (!callActiveRef.current || epoch !== callEpochRef.current) return;
       await handleUtterance(text, "voice");
     } catch (e) {
       if (!mountedRef.current || epoch !== callEpochRef.current) return;
+      if (speechRef.current?.sttProvider === "groq") {
+        batchRetryBlockedRef.current = true;
+        setVoiceNote(
+          `${formatError(e)} Press Retry microphone to try voice again; typing still works.`,
+        );
+        setPhase("text_fallback");
+        setMicStateSafe("ready");
+        return;
+      }
       if (
-        speechRef.current?.configured &&
-        !verbxUnavailableRef.current &&
+        speechRef.current?.sttProvider === "verbx" &&
+        !batchUnavailableRef.current &&
         getSpeechRecognitionCtor()
       ) {
-        verbxUnavailableRef.current = true;
+        batchUnavailableRef.current = true;
         recognitionUnavailableRef.current = false;
         useFallbackRef.current = false;
         setVoiceNote(
@@ -1187,7 +1269,12 @@ export default function CallSimulatorPage() {
     const session: FallbackSession = {
       recorder,
       chunks: [],
-      vad: new VoiceActivityDetector({ endSilenceMs: SILENCE_MS, speechThreshold: 0.025, minSpeechMs: 220 }),
+      vad: new VoiceActivityDetector({
+        endSilenceMs: SILENCE_MS,
+        speechThreshold: 0.025,
+        minSpeechMs: 220,
+        maxSpeechMs: 30_000,
+      }),
       heardSpeech: false,
       stopping: false,
     };
@@ -1197,11 +1284,13 @@ export default function CallSimulatorPage() {
       if (event.data.size > 0) session.chunks.push(event.data);
     };
     recorder.onstop = () => {
+      const wasCurrent = fallbackRef.current === session && epoch === callEpochRef.current;
+      if (fallbackRef.current === session) fallbackRef.current = null;
       if (fallbackVadTimerRef.current) {
         clearInterval(fallbackVadTimerRef.current);
         fallbackVadTimerRef.current = null;
       }
-      if (fallbackRef.current === session) fallbackRef.current = null;
+      if (!wasCurrent) return;
       if (session.stopping && !session.heardSpeech) {
         if (callActiveRef.current && phaseRef.current === "listening") {
           setTimeout(() => startFallbackCapture(callEpochRef.current, true), 250);
@@ -1249,7 +1338,7 @@ export default function CallSimulatorPage() {
       const event = session.vad.update(currentMic.readLevel(), performance.now());
       if (event === "speech_start") {
         session.heardSpeech = true;
-      } else if (event === "speech_end") {
+      } else if (event === "speech_end" || event === "max_duration") {
         finishFallbackUtterance(epoch);
       } else if (event === "no_speech") {
         session.stopping = true;
@@ -1272,6 +1361,11 @@ export default function CallSimulatorPage() {
       setVoiceNote("Microphone is muted. Unmute it to answer by voice, or type below.");
       return;
     }
+    if (batchRetryBlockedRef.current) {
+      setPhase("text_fallback");
+      setMicStateSafe("ready");
+      return;
+    }
     try {
       await ensureMicrophone(epoch);
     } catch (e) {
@@ -1283,14 +1377,50 @@ export default function CallSimulatorPage() {
     }
     setMicStateSafe("ready");
     if (!levelRafRef.current) startLevelLoop(epoch);
-    if (speechRef.current?.configured && !verbxUnavailableRef.current) {
-      setVoiceNote("Live audio is sent to the configured speech service after 2.5 s of silence.");
-      void startFallbackCapture(epoch, false);
-    } else if (useFallbackRef.current || recognitionUnavailableRef.current) {
-      void startFallbackCapture(epoch, false);
-    } else {
-      startRecognition(epoch);
+    const status = speechRef.current;
+    const batchAvailable =
+      Boolean(status?.sttConfigured) &&
+      !batchUnavailableRef.current &&
+      !batchRetryBlockedRef.current;
+    const batchProvider =
+      status?.sttProvider === "groq" || status?.sttProvider === "verbx"
+        ? status.sttProvider
+        : null;
+    const resolved = resolveSttProvider({
+      selection: status?.sttSelection ?? "auto",
+      browserSupported: Boolean(getSpeechRecognitionCtor()),
+      groqConfigured: batchAvailable && batchProvider === "groq",
+      verbxConfigured: batchAvailable && batchProvider === "verbx",
+    });
+    let provider = resolved.provider;
+    if (
+      (useFallbackRef.current || recognitionUnavailableRef.current) &&
+      provider === "browser"
+    ) {
+      provider = batchAvailable && batchProvider ? batchProvider : "text";
     }
+    if (provider === "groq" || provider === "verbx") {
+      setVoiceNote(
+        resolved.fallback
+          ? "Browser recognition is unavailable. The configured batch speech-to-text service is used; a turn may take longer."
+          : `Audio is sent to ${sttLabel(provider)} after 2.5 s of silence.`,
+      );
+      void startFallbackCapture(epoch, false);
+      return;
+    }
+    if (provider === "browser") {
+      if (resolved.fallback) {
+        setVoiceNote(
+          resolved.reason === "groq_unavailable"
+            ? "Groq speech-to-text is not configured. Browser recognition is used instead."
+            : "Configured speech-to-text is unavailable. Browser recognition is used instead.",
+        );
+      }
+      startRecognition(epoch);
+      return;
+    }
+    setPhase("text_fallback");
+    setVoiceNote("No microphone speech-to-text is available. Type the patient's reply.");
   }
 
   function failMicrophone(error: unknown, epoch: number) {
@@ -1365,6 +1495,9 @@ export default function CallSimulatorPage() {
     const turn = turnSeqRef.current + 1;
     turnSeqRef.current = turn;
     submittingRef.current = true;
+    turnStartedAtRef.current = performance.now();
+    replyReceivedAtRef.current = 0;
+    firstAudioAtRef.current = 0;
     setError(null);
     setBusy(true);
     addLog("patient", clean);
@@ -1384,6 +1517,7 @@ export default function CallSimulatorPage() {
         });
         if (!callActiveRef.current || epoch !== callEpochRef.current) return;
         if (turnSeqRef.current !== turn) return;
+        replyReceivedAtRef.current = performance.now();
         const record = recordTurnData(data);
         submittingRef.current = false;
         submitInFlightRef.current = null;
@@ -1396,8 +1530,18 @@ export default function CallSimulatorPage() {
           finishCall();
         } else if (demoModeRef.current === "turn") {
           setPhase("text_fallback");
-        } else if (phaseRef.current === "speaking") {
+        } else if (phaseRef.current === "speaking" || phaseRef.current === "processing") {
           void startListening(epoch);
+          const startedAt = turnStartedAtRef.current;
+          if (startedAt > 0) {
+            setLatency({
+              replyMs: Math.round(replyReceivedAtRef.current - startedAt),
+              firstAudioMs: firstAudioAtRef.current
+                ? Math.round(firstAudioAtRef.current - startedAt)
+                : null,
+              resumedMs: Math.round(performance.now() - startedAt),
+            });
+          }
         }
       } catch (e) {
         if (!mountedRef.current || epoch !== callEpochRef.current) return;
@@ -1479,6 +1623,8 @@ export default function CallSimulatorPage() {
     submittingRef.current = false;
     submitInFlightRef.current = null;
     endingAfterSpeechRef.current = false;
+    batchRetryBlockedRef.current = false;
+    batchUnavailableRef.current = false;
     setLog([]);
     setInterim("");
     setDecisions([]);
@@ -1680,7 +1826,8 @@ export default function CallSimulatorPage() {
     if (!isCallLive(phaseRef.current)) return;
     recognitionUnavailableRef.current = false;
     useFallbackRef.current = false;
-    verbxUnavailableRef.current = false;
+    batchUnavailableRef.current = false;
+    batchRetryBlockedRef.current = false;
     setMicError(null);
     setVoiceNote(null);
     stopRecognitionInternal();
@@ -1735,9 +1882,9 @@ export default function CallSimulatorPage() {
         subtitle="A call-first medication check-in rehearsal. Speak naturally: the turn is sent when you pause. No real phone call, SMS, or email is sent, and no dosage advice is given."
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <Badge tone={speech?.configured ? "sage" : "sand"}>
+            <Badge tone={speech?.configured || speech?.sttConfigured ? "sage" : "sand"}>
               <Icon name="activity" size={11} />
-              {speech?.configured ? "Voice provider connected" : "Text-only voice fallback"}
+              {`${sttLabel(speech?.sttProvider ?? "browser")} + ${speech?.ttsProvider === "verbx" ? "VerbX TTS" : "text voice"}`}
             </Badge>
             <Link href={checkInId ? `/check-ins/${checkInId}` : "/check-ins"} className="neo-btn h-8 text-[10px]">
               <Icon name="file" size={12} />
@@ -2043,11 +2190,21 @@ export default function CallSimulatorPage() {
               <li className="flex gap-2">
                 <Icon name="activity" size={12} />
                 <span>
-                  {speech?.configured
-                    ? `Speech provider: ${speech.provider}. Browser recognition is primary; ${speech.mode === "live_provider" ? "live" : "simulated"} STT is the fallback.`
-                    : "No live speech provider is configured. Browser recognition or typed turns are used; voice playback is text-only."}
+                  {speech && (speech.sttConfigured || speech.configured)
+                    ? `Active speech: ${sttLabel(speech.sttProvider)} and ${speech.ttsProvider === "verbx" ? "VerbX TTS" : "text-only playback"}. Selection: ${speech.sttSelection}. Failures are shown above; the app never silently swaps provider mid-turn.`
+                    : "No live speech provider is configured. Browser live STT or typed turns are used; voice playback is text-only."}
                 </span>
               </li>
+              {latency ? (
+                <li className="flex gap-2">
+                  <Icon name="clock" size={12} />
+                  <span>
+                    Last turn: reply {latency.replyMs} ms, first audio{" "}
+                    {latency.firstAudioMs === null ? "unavailable" : `${latency.firstAudioMs} ms`}
+                    , listening resumed {latency.resumedMs} ms.
+                  </span>
+                </li>
+              ) : null}
               <li className="flex gap-2">
                 <Icon name="alert" size={12} />
                 <span>No dosage advice, no real calls, no real notifications. All data is synthetic.</span>

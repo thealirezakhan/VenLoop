@@ -54,6 +54,15 @@ describe("VoiceActivityDetector", () => {
     expect(vad.update(0, 5_500)).toBe("speech_end");
   });
 
+  it("ends an utterance at the maximum duration even while speech continues", () => {
+    const vad = new VoiceActivityDetector({ maxSpeechMs: 5_000, endSilenceMs: 2_500 });
+    vad.reset(0);
+
+    expect(vad.update(0.2, 500)).toBe("speech_start");
+    expect(vad.update(0.2, 5_499)).toBeNull();
+    expect(vad.update(0.2, 5_500)).toBe("max_duration");
+  });
+
   it("reports no speech after the idle timeout", () => {
     const vad = new VoiceActivityDetector({ noSpeechMs: 5_000 });
     vad.reset(0);

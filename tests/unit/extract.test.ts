@@ -35,7 +35,10 @@ describe("extractSignals", () => {
     expect(extractSignals("Should I change my dosage?").dosageQuestion).toBe(true);
     expect(extractSignals("Should I take another dose?").dosageQuestion).toBe(true);
     expect(extractSignals("Can I take one more pill?").dosageQuestion).toBe(true);
-    expect(extractSignals("I took an extra tablet, is that okay?").dosageQuestion).toBe(true);
+      expect(extractSignals("I took an extra tablet, is that okay?").dosageQuestion).toBe(true);
+      expect(extractSignals("I missed my morning dose, what should I do?").dosageQuestion).toBe(true);
+      expect(extractSignals("I forgot my pill. Can I take it now?").dosageQuestion).toBe(true);
+      expect(extractSignals("Should I reduce my tablets?").dosageQuestion).toBe(true);
   });
 
   it("emergency phrases set the emergency flag", () => {

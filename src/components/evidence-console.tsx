@@ -237,6 +237,17 @@ export async function EvidenceConsole({ id, backHref, backLabel }: { id: string;
                       <span className="font-semibold">Follow-up:</span> {c.follow_up_question}
                     </p>
                   ) : null}
+                  {c.transcription_metadata ? (
+                    <details className="mt-1 pl-2">
+                      <summary className="cursor-pointer text-[9px] font-semibold text-ink-muted uppercase">
+                        Transcription interpretation (
+                        {(c.transcription_metadata as { correctionStatus?: string }).correctionStatus ??
+                          "none"}
+                        )
+                      </summary>
+                      <JsonBlock value={c.transcription_metadata} />
+                    </details>
+                  ) : null}
                   {c.analysis ? (
                     <details className="mt-1 pl-2">
                       <summary className="cursor-pointer text-[9px] font-semibold text-ink-muted uppercase">

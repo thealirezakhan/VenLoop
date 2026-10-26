@@ -9,13 +9,19 @@ export function joinTranscript(finalText: string, interimText: string): string {
   return `${finalText} ${interimText}`.replace(/\s+/g, " ").trim();
 }
 
-export type VoiceActivityEvent = "speech_start" | "speech_end" | "no_speech";
+export type VoiceActivityEvent =
+  | "speech_start"
+  | "speech_end"
+  | "no_speech"
+  | "max_duration";
 
 export interface VoiceActivityOptions {
   speechThreshold?: number;
   endSilenceMs?: number;
   noSpeechMs?: number;
   minSpeechMs?: number;
+  /** Hard ceiling so a noisy room cannot keep one recorder session open forever. */
+  maxSpeechMs?: number;
 }
 
 /**
@@ -28,6 +34,7 @@ export class VoiceActivityDetector {
   private readonly endSilenceMs: number;
   private readonly noSpeechMs: number;
   private readonly minSpeechMs: number;
+  private readonly maxSpeechMs: number;
   private startedAt = 0;
   private speechStartedAt = 0;
   private speechStarted = false;
@@ -38,6 +45,7 @@ export class VoiceActivityDetector {
     this.endSilenceMs = options.endSilenceMs ?? 900;
     this.noSpeechMs = options.noSpeechMs ?? 15_000;
     this.minSpeechMs = options.minSpeechMs ?? 250;
+    this.maxSpeechMs = options.maxSpeechMs ?? 30_000;
   }
 
   reset(now: number): void {
@@ -48,6 +56,10 @@ export class VoiceActivityDetector {
   }
 
   update(rms: number, now: number): VoiceActivityEvent | null {
+    if (this.speechStarted && now - this.speechStartedAt >= this.maxSpeechMs) {
+      this.reset(now);
+      return "max_duration";
+    }
     if (rms >= this.speechThreshold) {
       if (!this.speechStarted) {
         this.speechStarted = true;

@@ -8,6 +8,8 @@ export interface ExtractedSignals {
   needsClarification: boolean;
   /** Red-flag phrases that take the emergency pathway (doc: severity combinations). */
   emergency: boolean;
+  /** True when context must block any guess about today's adherence. */
+  adherenceLocked?: boolean;
 }
 
 const DOSAGE_PATTERNS: RegExp[] = [
@@ -23,6 +25,10 @@ const DOSAGE_PATTERNS: RegExp[] = [
   /\b(do|did|will) i (need to )?(take|redo|repeat)\b.*\b(another|extra|more|second|again)\b/i,
   /\b(took|take)\s+(two|2|three|3|an extra|another)\b.*\b(tablets?|pills?|dose)?\b/i,
   /\b(stop|continue|change)\b.*\b(taking\s+)?(this|my|the)\s+(medicine|medication|drug|tablet|pill)\b/i,
+  /\b(chang(e|ing)|increas(e|ing)|reduc(e|ing)|skip|stop)\b.*\b(tablets?|pills?|medicine|medication)\b/i,
+  /\b(missed|forgot|skipped)\b.*\b(dose|tablet|pill|medicine|medication)\b.*\b(what|should|can|okay|safe|now|later)\b/i,
+  /\bwhat (should|do) i do\b.*\b(missed|forgot|skipped)\b/i,
+  /\b(is it (okay|safe)|can i)\b.*\b(take|skip|stop|double)\b.*\b(dose|tablet|pill|medicine|medication)\b/i,
 ];
 
 /** Red-flag phrases: emergency pathway wins over routine symptom handling. */
@@ -61,10 +67,17 @@ const TAKEN_PATTERNS: RegExp[] = [
 ];
 
 const AMBIGUOUS_PATTERNS: RegExp[] = [
-  /\b(maybe|probably|perhaps|not sure|unsure|can'?t remember|cannot remember|don'?t remember|i think so|sort of|kind of)\b/i,
-  /\bsometime earlier\b/i,
-  /\bi guess\b/i,
+  /\b(maybe|probably|perhaps|possibly|not sure|unsure|uncertain|not certain|can'?t remember|cannot remember|don'?t remember|do not remember|i think|i guess|sort of|kind of)\b/i,
+  /\b(might|may)\s+(have|'?ve)\b/i,
+  /\b(no idea|don'?t know|do not know|don'?t think|do not think)\b/i,
+  /\b(pata nahi|yaad nahi|shayad|lagta hai|ho sakta hai)\b/i,
+  /\b(mahiti|mahit|athavt|athavat) nahi\b/i,
+  /\bkadachit\b/i,
+  /(पता नहीं|याद नहीं|शायद|लगता है|हो सकता है|माहिती नाही|माहित नाही|कदाचित)/u,
 ];
+
+const ADHERENCE_CUE =
+  /\b(medicine|medication|meds?|pills?|tablets?|dose|doses|prescription|took|taken|take|taking|swallow(ed)?)\b/i;
 
 /**
  * Deterministic keyword extraction for the demo (English fixtures).
@@ -85,12 +98,18 @@ export function extractSignals(transcript: string): ExtractedSignals {
   let adherenceStatus: AdherenceStatus = "unknown";
   let needsClarification = false;
 
-  if (NOT_TAKEN_PATTERNS.some((re) => re.test(text))) {
+  // "I think I might have taken it" contains "taken", but it is not a report
+  // of adherence. Uncertainty about a medication statement must be clarified
+  // before the positive patterns get a chance to match.
+  const uncertainAdherence =
+    AMBIGUOUS_PATTERNS.some((re) => re.test(text)) && ADHERENCE_CUE.test(text);
+
+  if (uncertainAdherence) {
+    needsClarification = true;
+  } else if (NOT_TAKEN_PATTERNS.some((re) => re.test(text))) {
     adherenceStatus = "reported_not_taken";
   } else if (TAKEN_PATTERNS.some((re) => re.test(text))) {
     adherenceStatus = "reported_taken";
-  } else if (AMBIGUOUS_PATTERNS.some((re) => re.test(text)) || text.length === 0) {
-    needsClarification = true;
   } else {
     needsClarification = true;
   }
