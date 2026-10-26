@@ -3,6 +3,26 @@
 const CAREGIVER = { email: "caregiver.a@venloop.demo", password: "venloop-demo-123" };
 const ADMIN = { email: "admin@venloop.demo", password: "venloop-demo-123" };
 
+function silentWav(seconds = 0.5): Buffer {
+  const sampleRate = 8_000;
+  const samples = Math.round(sampleRate * seconds);
+  const data = Buffer.alloc(samples * 2);
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0, "ascii");
+  header.writeUInt32LE(36 + data.length, 4);
+  header.write("WAVEfmt ", 8, "ascii");
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36, "ascii");
+  header.writeUInt32LE(data.length, 40);
+  return Buffer.concat([header, data]);
+}
+
 async function login(page: Page, user: { email: string; password: string }) {
   await page.goto("/login");
   await page.locator('input[type="email"]').fill(user.email);
@@ -83,6 +103,33 @@ test.describe("VenLoop e2e (PRD 16.3)", () => {
     await expect(page.getByText(/Call complete/i).first()).toBeVisible({ timeout: 3_000 });
     await page.waitForTimeout(1_000);
     expect(submittedBodies.some((body) => body.includes("No, that is all"))).toBe(false);
+  });
+
+  test("second simulated call still plays voice audio after ending the first", async ({ page }) => {
+    test.setTimeout(120_000);
+    const wav = silentWav(1);
+    await page.route("**/api/v1/speech/tts", (route) =>
+      route.fulfill({ status: 200, contentType: "audio/wav", body: wav }),
+    );
+    await login(page, CAREGIVER);
+    await page.goto("/demo/call-simulator?patient=00000000-0000-4000-8000-000000000014");
+    await page.getByRole("button", { name: "Turn-Based Demo" }).click();
+    await page.getByRole("button", { name: "Start simulated call" }).click();
+    await expect(page.getByText("SIMULATED CALL STARTED", { exact: false }).first()).toBeVisible({
+      timeout: 30_000,
+    });
+    await page.waitForTimeout(700);
+
+    await page.getByRole("button", { name: "End call" }).click();
+    await page.getByRole("button", { name: "Start new simulated call" }).click();
+    await expect(page.getByText("SIMULATED CALL STARTED", { exact: false }).last()).toBeVisible({
+      timeout: 30_000,
+    });
+    await page.waitForTimeout(700);
+    const currentTime = await page
+      .locator("audio")
+      .evaluate((element) => (element as HTMLAudioElement).currentTime);
+    expect(currentTime).toBeGreaterThan(0);
   });
 
   test("nausea follow-up keeps the simulated call open until answered", async ({ page }) => {

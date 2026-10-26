@@ -440,11 +440,11 @@ export default function CallSimulatorPage() {
       stopFallbackInternal();
       stopPlaybackInternal();
       stopMicrophoneInternal();
-      closeAudioContext();
     };
     return () => {
       mountedRef.current = false;
       cleanupRef.current();
+      closeAudioContext();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -859,6 +859,9 @@ export default function CallSimulatorPage() {
       }
       return played;
     } catch {
+      if (epoch === callEpochRef.current) {
+        setVoiceNote("Voice playback could not start. The reply is shown as text.");
+      }
       return false;
     }
   }
