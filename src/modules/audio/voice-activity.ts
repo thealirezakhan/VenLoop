@@ -6,7 +6,19 @@ export function computeRms(samples: Float32Array): number {
 }
 
 export function joinTranscript(finalText: string, interimText: string): string {
-  return `${finalText} ${interimText}`.replace(/\s+/g, " ").trim();
+  const final = finalText.replace(/\s+/g, " ").trim();
+  const interim = interimText.replace(/\s+/g, " ").trim();
+  if (!final) return interim;
+  if (!interim) return final;
+  const interimWords = interim.split(" ");
+  const lastFinal = final.split(" ").at(-1) ?? "";
+  // The browser can report the same trailing word as both a final result and
+  // the next interim hypothesis. Drop only the duplicated boundary word; text
+  // inside one segment is never changed.
+  while (interimWords.length > 0 && interimWords[0].toLowerCase() === lastFinal.toLowerCase()) {
+    interimWords.shift();
+  }
+  return `${final} ${interimWords.join(" ")}`.trim();
 }
 
 export type VoiceActivityEvent =

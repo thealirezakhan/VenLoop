@@ -157,6 +157,20 @@ export function interpretTranscript(input: {
     });
   }
 
+  if (
+    /\b(another|extra|more|second)\s+door\b|\bdoor of (medicine|medication|pills?|tablets?)\b/i.test(
+      combined,
+    )
+  ) {
+    candidates.push({
+      kind: "stt_confusion",
+      proposedValue: "text:dose",
+      reason:
+        "The transcript says \"door\", which may be a speech-recognition error for \"dose\". It is not changed automatically.",
+      requiresConfirmation: true,
+    });
+  }
+
   if (/\b(took|take|taken)\s+(my|the|a)\s+meditation\b/i.test(combined)) {
     candidates.push({
       kind: "stt_confusion",

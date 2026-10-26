@@ -18,6 +18,13 @@ describe("joinTranscript", () => {
     expect(joinTranscript("", "hello")).toBe("hello");
     expect(joinTranscript("done", "")).toBe("done");
   });
+
+  it("does not repeat a word reported by both final and interim segments", () => {
+    expect(joinTranscript("I feel feverish", "feverish and dizzy")).toBe(
+      "I feel feverish and dizzy",
+    );
+    expect(joinTranscript("that that", "")).toBe("that that");
+  });
 });
 
 describe("VoiceActivityDetector", () => {

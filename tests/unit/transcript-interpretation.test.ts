@@ -107,6 +107,18 @@ describe("transcript interpretation safety cases", () => {
     expect(decide(result.interpretedSignals).type).toBe("symptom_escalation");
   });
 
+  it("flags a door/dose confusion without rewriting the raw transcript", () => {
+    const text = "I took my medicine but I feel feverish. Should I take another door of medicine?";
+    const result = interpret(text);
+    expect(result.rawTranscript).toBe(text);
+    expect(result.correctedTranscript).toBe(text);
+    expect(result.correctionCandidates).toContainEqual(
+      expect.objectContaining({ kind: "stt_confusion", proposedValue: "text:dose" }),
+    );
+    expect(result.interpretedSignals.dosageQuestion).toBe(true);
+    expect(decide(result.interpretedSignals).type).toBe("dosage_safety_response");
+  });
+
   it("flags a meditation/medication confusion without rewriting it", () => {
     const text = "I took my meditation";
     const result = interpret(text);

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { env } from "@/lib/env";
 import { normalizeLanguage } from "@/modules/conversation/language";
-import type { SttProviderId } from "@/modules/providers/speech";
+import { sttPromptFor, type SttProviderId } from "@/modules/providers/speech";
 
 /**
  * Optional speech adapters. Server-only: API keys never reach the browser and
@@ -138,9 +138,12 @@ async function transcribeWithGroq(input: {
       `utterance.${audioExtension(mimeType)}`,
     );
     form.append("model", env.GROQ_STT_MODEL);
-    form.append("language", normalizeLanguage(input.language));
+    const language = normalizeLanguage(input.language);
+    form.append("language", language);
     form.append("response_format", "json");
     form.append("temperature", "0");
+    const prompt = sttPromptFor(language);
+    if (prompt) form.append("prompt", prompt);
 
     const response = await fetch(GROQ_TRANSCRIPTION_URL, {
       method: "POST",

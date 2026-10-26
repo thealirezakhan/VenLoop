@@ -27,6 +27,7 @@ supabase/.branches/
 
 # Tests & browser artifacts
 coverage/
+tests/fixtures/stt/noisy/
 test-results/
 playwright-report/
 blob-report/

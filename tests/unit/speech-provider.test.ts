@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { resolveSttProvider } from "@/modules/providers/speech";
+import { resolveSttProvider, sttPromptFor } from "@/modules/providers/speech";
 
 const none = { groqConfigured: false, verbxConfigured: false };
 
 describe("resolveSttProvider", () => {
-  it("prefers live browser recognition in auto mode", () => {
+  it("prefers configured Groq over browser recognition in auto mode", () => {
     expect(
       resolveSttProvider({
         selection: "auto",
@@ -12,29 +12,29 @@ describe("resolveSttProvider", () => {
         groqConfigured: true,
         verbxConfigured: true,
       }),
-    ).toEqual({ provider: "browser", fallback: false, reason: "selected" });
+    ).toEqual({ provider: "groq", fallback: false, reason: "selected" });
   });
 
-  it("uses Groq before VerbX when the browser has no recognizer", () => {
+  it("uses VerbX before the browser when Groq is not configured", () => {
     expect(
       resolveSttProvider({
         selection: "auto",
-        browserSupported: false,
-        groqConfigured: true,
-        verbxConfigured: true,
-      }),
-    ).toEqual({ provider: "groq", fallback: false, reason: "browser_unavailable" });
-  });
-
-  it("uses VerbX when it is the only configured batch provider", () => {
-    expect(
-      resolveSttProvider({
-        selection: "auto",
-        browserSupported: false,
+        browserSupported: true,
         groqConfigured: false,
         verbxConfigured: true,
       }),
-    ).toEqual({ provider: "verbx", fallback: false, reason: "browser_unavailable" });
+    ).toEqual({ provider: "verbx", fallback: false, reason: "selected" });
+  });
+
+  it("falls back to the browser in auto mode when no batch provider is configured", () => {
+    expect(
+      resolveSttProvider({
+        selection: "auto",
+        browserSupported: true,
+        groqConfigured: false,
+        verbxConfigured: false,
+      }),
+    ).toEqual({ provider: "browser", fallback: false, reason: "selected" });
   });
 
   it("honours an explicit Groq selection", () => {
@@ -67,6 +67,12 @@ describe("resolveSttProvider", () => {
         ...none,
       }),
     ).toEqual({ provider: "browser", fallback: true, reason: "verbx_unavailable" });
+  });
+
+  it("uses a domain vocabulary prompt for English only", () => {
+    expect(sttPromptFor("en")).toMatch(/medicine/i);
+    expect(sttPromptFor("hi")).toBeNull();
+    expect(sttPromptFor("mr")).toBeNull();
   });
 
   it("returns typed text mode when no voice provider is available", () => {

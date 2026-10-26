@@ -63,6 +63,28 @@ test.describe("VenLoop e2e (PRD 16.3)", () => {
     await expect(page.getByText(/Call complete/i).first()).toBeVisible({ timeout: 45_000 });
   });
 
+  test("End call stops the call immediately without a synthetic closing turn", async ({ page }) => {
+    test.setTimeout(90_000);
+    await login(page, CAREGIVER);
+    await page.goto("/demo/call-simulator?patient=00000000-0000-4000-8000-000000000014");
+    await page.getByRole("button", { name: "Turn-Based Demo" }).click();
+    await page.getByRole("button", { name: "Yes, I took my medicine this morning." }).click();
+    await page.getByRole("button", { name: "Start simulated call" }).click();
+    await expect(page.getByText("SIMULATED CALL STARTED", { exact: false }).first()).toBeVisible({
+      timeout: 30_000,
+    });
+
+    const submittedBodies: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().includes("/submit-input")) submittedBodies.push(request.postData() ?? "");
+    });
+
+    await page.getByRole("button", { name: "End call" }).click();
+    await expect(page.getByText(/Call complete/i).first()).toBeVisible({ timeout: 3_000 });
+    await page.waitForTimeout(1_000);
+    expect(submittedBodies.some((body) => body.includes("No, that is all"))).toBe(false);
+  });
+
   test("nausea follow-up keeps the simulated call open until answered", async ({ page }) => {
     test.setTimeout(90_000);
     await login(page, CAREGIVER);

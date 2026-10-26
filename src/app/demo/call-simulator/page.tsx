@@ -186,13 +186,6 @@ interface SpeechRecognitionLike {
 
 type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
 
-const INPUT_STATUSES = new Set([
-  "in_progress",
-  "awaiting_clarification",
-  "escalated",
-  "awaiting_approval",
-]);
-
 async function callApi(url: string, body?: unknown): Promise<ApiResult> {
   const res = await fetch(url, {
     method: "POST",
@@ -341,7 +334,6 @@ export default function CallSimulatorPage() {
   const scenarioRef = useRef("live");
   const startedAtRef = useRef<number | null>(null);
   const endingRef = useRef(false);
-  const finalTurnSentRef = useRef(false);
   const submittingRef = useRef(false);
   const submitInFlightRef = useRef<Promise<void> | null>(null);
   const turnSeqRef = useRef(0);
@@ -1108,10 +1100,12 @@ export default function CallSimulatorPage() {
         return;
       }
       if (!recognitionWantedRef.current) return;
-      if (interimTextRef.current) {
-        finalTextRef.current = joinTranscript(finalTextRef.current, interimTextRef.current);
-        interimTextRef.current = "";
-        if (mountedRef.current) setInterim(finalTextRef.current);
+      // Do not promote interim text into final before restarting: the next
+      // recognizer instance can report the same trailing audio again and the
+      // turn would be transcribed twice. Finish with the best hypothesis now.
+      if (interimTextRef.current.trim()) {
+        finishBrowserUtterance();
+        return;
       }
       scheduleRecognitionRestart(epoch);
     };
@@ -1139,6 +1133,18 @@ export default function CallSimulatorPage() {
     });
   }
 
+  function switchToBrowserAfterBatchFailure(epoch: number, message: string) {
+    batchUnavailableRef.current = true;
+    recognitionUnavailableRef.current = false;
+    useFallbackRef.current = false;
+    setVoiceNote(
+      `${message} Browser speech recognition is used for the rest of this call.`,
+    );
+    setPhase("listening");
+    setMicStateSafe("ready");
+    startRecognition(epoch);
+  }
+
   async function transcribeFallback(blob: Blob, epoch: number) {
     setPhase("processing");
     setMicStateSafe("off");
@@ -1160,10 +1166,13 @@ export default function CallSimulatorPage() {
       };
       if (!res.ok) {
         if (speechRef.current?.sttProvider === "groq") {
+          const message = body.error?.message ?? "Groq speech-to-text failed.";
+          if (speechRef.current?.sttSelection === "auto" && getSpeechRecognitionCtor()) {
+            switchToBrowserAfterBatchFailure(epoch, message);
+            return;
+          }
           batchRetryBlockedRef.current = true;
-          setVoiceNote(
-            `${body.error?.message ?? "Groq speech-to-text failed."} Press Retry microphone to try voice again; typing still works.`,
-          );
+          setVoiceNote(`${message} Press Retry microphone to try voice again; typing still works.`);
           setPhase("text_fallback");
           setMicStateSafe("ready");
           return;
@@ -1177,28 +1186,23 @@ export default function CallSimulatorPage() {
     } catch (e) {
       if (!mountedRef.current || epoch !== callEpochRef.current) return;
       if (speechRef.current?.sttProvider === "groq") {
+        if (speechRef.current?.sttSelection === "auto" && getSpeechRecognitionCtor()) {
+          switchToBrowserAfterBatchFailure(epoch, formatError(e));
+          return;
+        }
         batchRetryBlockedRef.current = true;
-        setVoiceNote(
-          `${formatError(e)} Press Retry microphone to try voice again; typing still works.`,
-        );
+        setVoiceNote(`${formatError(e)} Press Retry microphone to try voice again; typing still works.`);
         setPhase("text_fallback");
         setMicStateSafe("ready");
         return;
       }
       if (
         speechRef.current?.sttProvider === "verbx" &&
+        speechRef.current?.sttSelection === "auto" &&
         !batchUnavailableRef.current &&
         getSpeechRecognitionCtor()
       ) {
-        batchUnavailableRef.current = true;
-        recognitionUnavailableRef.current = false;
-        useFallbackRef.current = false;
-        setVoiceNote(
-          "Configured speech-to-text is unavailable, so browser speech recognition is used for the rest of this call.",
-        );
-        setPhase("listening");
-        setMicStateSafe("ready");
-        startRecognition(epoch);
+        switchToBrowserAfterBatchFailure(epoch, "Configured speech-to-text is unavailable.");
         return;
       }
       setVoiceNote(formatError(e));
@@ -1619,7 +1623,6 @@ export default function CallSimulatorPage() {
     const epoch = callEpochRef.current;
     callActiveRef.current = true;
     endingRef.current = false;
-    finalTurnSentRef.current = false;
     submittingRef.current = false;
     submitInFlightRef.current = null;
     endingAfterSpeechRef.current = false;
@@ -1730,45 +1733,20 @@ export default function CallSimulatorPage() {
     setBusy(false);
   }
 
-  async function endCall() {
-    if (endingRef.current) return;
-    if (phaseRef.current === "idle") return;
-    if (phaseRef.current === "error") {
-      finishCall();
-      return;
-    }
+  function endCall() {
+    if (phaseRef.current === "idle" || phaseRef.current === "ended") return;
+    // Ending is immediate and never sends a fabricated closing utterance. The
+    // epoch bump discards any in-flight turn, reply, or playback.
+    callEpochRef.current += 1;
     endingRef.current = true;
-    stopRecognitionInternal();
-    stopFallbackInternal();
-    stopPlaybackInternal();
-    setBusy(true);
-    try {
-      if (submitInFlightRef.current) await submitInFlightRef.current;
-      const id = checkInRef.current;
-      const currentStatus = statusRef.current;
-      if (id && currentStatus && INPUT_STATUSES.has(currentStatus) && !finalTurnSentRef.current) {
-        finalTurnSentRef.current = true;
-        const data = await callApi(`/api/v1/check-ins/${id}/submit-input`, {
-          transcript: "No, that is all. Thank you.",
-          inputSource: "typed",
-          language: languageRef.current,
-        });
-        const record = recordTurnData(data);
-        if (record.spoken) {
-          await deliverReply(record, callEpochRef.current);
-        }
-      }
-    } catch (e) {
-      if (mountedRef.current) setError(formatError(e));
-    } finally {
-      finishCall();
-    }
+    submittingRef.current = false;
+    submitInFlightRef.current = null;
+    finishCall();
   }
 
   function resetSession() {
     cleanupRef.current();
     endingRef.current = false;
-    finalTurnSentRef.current = false;
     submittingRef.current = false;
     submitInFlightRef.current = null;
     startingRef.current = false;

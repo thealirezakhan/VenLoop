@@ -1,0 +1,42 @@
+[
+    {
+        "text":  "Yes, I took my morning tablets.",
+        "file":  "took_morning.wav"
+    },
+    {
+        "text":  "I haven\u0027t taken my medicine yet.",
+        "file":  "not_taken.wav"
+    },
+    {
+        "text":  "Should I take another dose of medicine?",
+        "file":  "another_dose.wav"
+    },
+    {
+        "text":  "I think I\u0027m feeling a little feverish.",
+        "file":  "feverish.wav"
+    },
+    {
+        "text":  "I feel dizzy and a bit sick to my stomach.",
+        "file":  "dizzy_nausea.wav"
+    },
+    {
+        "text":  "I forgot my pill. Can I take it now?",
+        "file":  "forgot_pill.wav"
+    },
+    {
+        "text":  "No, I have no chest pain and no trouble breathing.",
+        "file":  "no_red_flags.wav"
+    },
+    {
+        "text":  "I have trouble breathing.",
+        "file":  "breathing.wav"
+    },
+    {
+        "text":  "I took the pills but I feel like having a fever. Should I take another pill?",
+        "file":  "multi_signal.wav"
+    },
+    {
+        "text":  "I am not sure if I took it, maybe I did.",
+        "file":  "uncertain.wav"
+    }
+]
